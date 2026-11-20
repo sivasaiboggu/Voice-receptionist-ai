@@ -65,7 +65,7 @@ export default function Appointments() {
   return (
     <div className="space-y-4">
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again.</p></div>
+      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again. Demo data — bookings made by simulated demo calls.</p></div>
       {appts.length === 0 && (
         <EmptyState icon={CalendarCheck2} title="No appointments yet" desc="Appointments booked by the agent show up here with the service, time and caller." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
       )}

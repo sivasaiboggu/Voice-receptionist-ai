@@ -44,6 +44,46 @@ def test_health(client):
     assert r.json()["ok"] is True
 
 
+def test_health_reports_demo_mode_and_db(client):
+    body = client.get("/health").json()
+    assert body["demo_mode"] is True
+    assert body["database"] == "ok"
+    assert body["service"] == "voice-receptionist-agent"
+
+
+def test_health_demo_mode_follows_env(client, monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "false")
+    assert client.get("/health").json()["demo_mode"] is False
+
+
+def test_cors_preflight_allows_local_dashboard(client):
+    r = client.options("/health", headers={
+        "Origin": "http://localhost:5174",
+        "Access-Control-Request-Method": "GET",
+    })
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5174"
+
+
+def test_cors_preflight_rejects_unlisted_origin(client):
+    r = client.options("/health", headers={
+        "Origin": "https://untrusted.example",
+        "Access-Control-Request-Method": "GET",
+    })
+    assert r.headers.get("access-control-allow-origin") is None
+
+
+def test_db_path_honours_sqlite_database_url(monkeypatch):
+    from backend.app.db import _resolve_db_path
+
+    monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/voice-test.db")
+    assert _resolve_db_path() == "/tmp/voice-test.db"
+    # A non-sqlite URL (e.g. Postgres) is not supported: fall back to the
+    # default SQLite file instead of pointing at the wrong database.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host/db")
+    assert _resolve_db_path().endswith("receptionist.db")
+
+
 def test_demo_call_books(client):
     r = client.post("/call/demo", json={})
     assert r.status_code == 200

@@ -43,7 +43,7 @@ export default function Calls() {
 
   return (
     <div className="space-y-4">
-      <div><h1 className="text-2xl font-bold tracking-tight">Calls</h1><p className="text-sm text-muted-foreground">Every call, with transcript, summary, sentiment and urgency. Select a call to read the full transcript.</p></div>
+      <div><h1 className="text-2xl font-bold tracking-tight">Calls</h1><p className="text-sm text-muted-foreground">Every call, with transcript, summary, sentiment and urgency. Select a call to read the full transcript. Demo data — every entry is a simulated call, not a real patient.</p></div>
       {calls.length === 0 && (
         <EmptyState icon={PhoneCall} title="No calls yet" desc="Calls appear here as soon as the agent handles one. Try a demo call — it books an appointment and logs the whole conversation." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
       )}

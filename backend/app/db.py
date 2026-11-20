@@ -3,8 +3,28 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "receptionist.db")
-DB_PATH = os.path.abspath(DB_PATH)
+
+def _resolve_db_path():
+    """SQLite file to use.
+
+    Honours ``DATABASE_URL`` when it is a ``sqlite://`` URL, e.g.
+    ``sqlite:///./receptionist.db`` (relative to the working directory,
+    which is the repo root when running uvicorn/docker compose) or
+    ``sqlite:////var/data/receptionist.db``. Any other scheme (notably
+    Postgres) is NOT supported by this layer — it falls back to the
+    default SQLite file instead of silently pointing at the wrong
+    database. See ``.env.example``.
+    """
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url.startswith("sqlite:///"):
+        path = url[len("sqlite:///"):]
+        if path == ":memory:":
+            return path
+        return os.path.abspath(path)
+    return os.path.join(os.path.dirname(__file__), "..", "..", "receptionist.db")
+
+
+DB_PATH = os.path.abspath(_resolve_db_path())
 
 
 def get_conn():

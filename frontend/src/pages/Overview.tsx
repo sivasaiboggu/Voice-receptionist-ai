@@ -71,6 +71,7 @@ export default function Overview() {
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
         <h1 className="text-2xl font-bold tracking-tight">{greeting()}, Sunrise Dental</h1>
         <p className="mt-1 text-sm text-muted-foreground">Your receptionist answered {stats?.calls_answered ?? 0} calls and booked {stats?.appointments_booked ?? 0} appointments.</p>
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge tone="warning">Demo data</Badge>These counts come from simulated demo calls stored by the backend — no real patient data.</p>
       </motion.div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,40 @@ from backend.app.db import db, init_db
 from backend.app.voice.twilio_voice import send_sms, twiml_gather, twiml_say
 
 app = FastAPI(title="Voice Receptionist Agent")
+
+
+def _env_flag(name, default=True):
+    return os.environ.get(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cors_origins():
+    """Allowed browser origins for the dashboard.
+
+    Set CORS_ORIGINS (comma-separated) in production to the deployed
+    frontend origin, e.g. https://voice-receptionist.vercel.app.
+    Defaults are the local Vite dev servers only — without this, a
+    Vercel-hosted dashboard calling this API from another origin is
+    blocked by the browser even though curl works.
+    """
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "http://localhost:5174",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:4173",
+    ]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 init_db()
 booking.seed_slots()
 
@@ -61,7 +96,23 @@ class SmsRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "voice-receptionist-agent", "version": "0.2.0", "demo_mode": True}
+    # demo_mode is read per-request (not at import) so tests and
+    # redeploys can flip DEMO_MODE without restarting the process.
+    # The DB check makes this a real health check: "ok" must mean the
+    # API can actually serve dashboard data, not just that it booted.
+    try:
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        db_status = "ok"
+    except Exception:
+        db_status = "error"
+    return {
+        "ok": db_status == "ok",
+        "service": "voice-receptionist-agent",
+        "version": "0.2.0",
+        "demo_mode": _env_flag("DEMO_MODE", True),
+        "database": db_status,
+    }
 
 
 @app.post("/call/start")

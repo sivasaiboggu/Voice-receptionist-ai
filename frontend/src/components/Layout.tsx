@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { CalendarDays, LayoutDashboard, Moon, PhoneCall, Phone, Sun, Stethoscope } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
+import { api } from '../lib/api'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 
@@ -13,6 +15,17 @@ const nav = [
 
 export default function Layout() {
   const { theme, toggle } = useTheme()
+  // Live backend status from GET /health — the old hardcoded
+  // "Agent online" pill claimed the agent was up even when the API
+  // was down or unconfigured. While checking, say so honestly.
+  const [backend, setBackend] = useState<'checking' | 'online' | 'offline'>('checking')
+  useEffect(() => {
+    let alive = true
+    api.health()
+      .then((h) => { if (alive) setBackend(h.ok && h.database === 'ok' ? 'online' : 'offline') })
+      .catch(() => { if (alive) setBackend('offline') })
+    return () => { alive = false }
+  }, [])
   return (
     <div className="min-h-screen bg-background">
       <div className="flex">
@@ -24,9 +37,18 @@ export default function Layout() {
               <div className="text-xs text-muted-foreground">Sunrise Dental Clinic</div>
             </div>
           </div>
-          <div className="mt-6 flex items-center gap-2 rounded-lg border bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-            <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
-            Agent online — answering calls
+          <div className={cn('mt-6 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium',
+            backend === 'online' && 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+            backend === 'offline' && 'bg-red-500/10 text-red-700 dark:text-red-300',
+            backend === 'checking' && 'bg-muted/60 text-muted-foreground')}>
+            <span className="relative flex h-2 w-2">
+              {backend === 'online' && (<><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></>)}
+              {backend === 'offline' && <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />}
+              {backend === 'checking' && <span className="relative inline-flex h-2 w-2 animate-pulse rounded-full bg-muted-foreground" />}
+            </span>
+            {backend === 'online' && 'Agent online — answering calls'}
+            {backend === 'offline' && 'Backend offline — demo calls unavailable'}
+            {backend === 'checking' && 'Checking backend…'}
           </div>
           <nav className="mt-6 space-y-1">
             {nav.map((n) => (
@@ -36,7 +58,7 @@ export default function Layout() {
             ))}
           </nav>
           <div className="mt-auto rounded-xl border bg-muted/50 p-4 text-xs leading-relaxed text-muted-foreground">
-            <b className="text-foreground">Demo mode</b><br />No phone or API keys needed — run a simulated call from Live call.
+            <b className="text-foreground">Demo mode</b><br />No phone or API keys needed — run a simulated call from Live call. Calls and appointments shown here come from those simulated calls, not real patients.
           </div>
         </aside>
         <div className="min-w-0 flex-1">

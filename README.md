@@ -32,8 +32,8 @@ base, and escalates to a human when it should.
 | LLM | Gemini free tier, mock fallback | No — optional |
 | Search / RAG | Local keyword retrieval over `docs/kb/` | No |
 | SMS / WhatsApp | Twilio sandbox / Meta Cloud API free tier | No — optional |
-| Database | SQLite (free, default); Postgres optional | No |
-| Hosting (demo) | Vercel / Render free tier | No |
+| Database | SQLite (free, default) | No |
+| Hosting (demo) | Vercel (frontend) / Render free tier (backend) | No |
 
 No keys are hardcoded. Everything paid is optional and has a free/mock fallback.
 
@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 34 tests
+.venv/bin/python -m pytest tests/ -q             # 39 tests
 ```
 
 Run the API:
@@ -117,6 +117,70 @@ curl -X POST localhost:8001/call/turn -H 'Content-Type: application/json' \
   -d '{"text": "I am in terrible pain, I need help today"}'
 ```
 
+## Deployment
+
+Frontend and backend deploy separately — the dashboard is a static Vite
+site, the API is a FastAPI service. Do not point the deployed frontend
+at `localhost`: a visitor's browser can never reach your machine.
+
+### Frontend — Vercel
+
+1. In Vercel, create a project from this repo with **Root Directory `frontend`**
+   (`frontend/vercel.json` already sets the Vite build, `dist` output, and
+   the SPA rewrite so `/calls`, `/appointments`, `/live` load on refresh).
+2. Set the environment variable **`VITE_API_URL`** to the deployed backend
+   URL, e.g. `https://voice-receptionist-api.onrender.com` (no trailing
+   slash). Without it, production builds fail fast with a configuration
+   error instead of silently calling localhost. Local dev needs nothing —
+   it defaults to `http://localhost:8001` (or `/api` via the Vite proxy).
+3. Deploy. Verify: open the site — the sidebar shows "Agent online" only
+   when `GET /health` on the backend actually answers.
+
+### Backend — Render (or any host running Python)
+
+1. Create a Web Service from this repo, start command:
+   `uvicorn backend.app.api:app --host 0.0.0.0 --port $PORT`
+   (Render sets `$PORT`; the start command passes it to uvicorn).
+   Install with `pip install -r backend/requirements.txt`.
+2. Set environment variables: `CORS_ORIGINS=https://<your-frontend>.vercel.app`
+   (without this the browser blocks every API call, even though curl works),
+   `DATABASE_URL=sqlite:///./receptionist.db`, `DEMO_MODE=true`.
+   Add `GEMINI_API_KEY` / Twilio keys only if you want real calls/SMS.
+3. Verify: `curl $API_URL/health` → `{"ok": true, "database": "ok", ...}`.
+   Then set `VITE_API_URL` to this URL in Vercel and redeploy the frontend.
+
+> SQLite note: calls, appointments and slots live in `receptionist.db`.
+> On Render's free tier the filesystem is ephemeral — data resets on
+> restart/redeploy unless you attach a persistent disk and point
+> `DATABASE_URL` at it (e.g. `sqlite:////var/data/receptionist.db`).
+> Postgres is not supported by the current storage layer.
+
+### Local production check
+
+```bash
+.venv/bin/uvicorn backend.app.api:app --port 8001 &
+cd frontend && npm run build && npm run preview   # http://localhost:4173
+curl localhost:8001/health
+```
+
+## What changed in v0.2.1 (production hardening)
+
+- **Backend** — CORS via `CORS_ORIGINS` (a Vercel dashboard was previously
+  blocked by the browser); `/health` now reports the real `DEMO_MODE` and
+  a live database check instead of a hardcoded `true`; `DATABASE_URL` is
+  honoured for `sqlite://` URLs (Postgres was claimed but never worked).
+- **Frontend** — `VITE_API_URL` with a dev-only localhost default and no
+  localhost fallback in production builds; a missing production API URL
+  fails fast with a setup error; non-JSON responses (e.g. the SPA's own
+  `index.html`) are reported as a misconfiguration, not a crash.
+- **Dashboard** — the sidebar status comes from live `GET /health`
+  (checking / online / offline) instead of a hardcoded "Agent online";
+  Overview, Calls and Appointments are labelled **Demo data** — the
+  counts come from simulated demo calls, not real patients.
+- **Deploy config** — `frontend/vercel.json` (Vite + SPA rewrites),
+  `frontend/.env.example`, corrected root `.env.example` (unused vars
+  marked as such), and this Deployment section. 39 tests (was 34).
+
 ## What changed in v0.2
 
 - **Booking is safe under concurrency** — slots are claimed with one
@@ -137,11 +201,13 @@ curl -X POST localhost:8001/call/turn -H 'Content-Type: application/json' \
 
 | Variable | Meaning |
 | --- | --- |
-| `GEMINI_API_KEY` | Optional. Polishes replies (never adds facts). |
+| `GEMINI_API_KEY` | Optional. Read by `gemini_polish()` (not yet wired into replies — today's answers come from `docs/kb/` only). |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | Optional. Real calls + SMS. |
-| `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_ID` | Optional. WhatsApp confirmations. |
-| `DATABASE_URL` | `sqlite:///./receptionist.db` by default. |
-| `DEMO_MODE` | `true` by default — simulated calls, no keys. |
+| `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_ID` | Optional, not yet read by any code — see `.env.example`. |
+| `DATABASE_URL` | `sqlite:///./receptionist.db` by default. SQLite only — Postgres is not supported. |
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API. Defaults to local Vite dev servers. Set to the Vercel URL in production. |
+| `VITE_API_URL` | Frontend only (set in Vercel). The deployed backend URL. Required in production; dev defaults to `http://localhost:8001`. |
+| `DEMO_MODE` | `true` by default — simulated calls, no keys. Reported by `GET /health`. |
 
 ## Safety
 
