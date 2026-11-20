@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, CalendarCheck2, CalendarX2, RefreshCw } from 'lucide-react'
 import { api, Appt } from '../lib/api'
 import { useToast } from '../lib/useToast'
+import { tzAbbreviation } from '../lib/utils'
 import EmptyState from '../components/EmptyState'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -19,9 +20,13 @@ export default function Appointments() {
   const [error, setError] = useState('')
   const [confirming, setConfirming] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  // Clinic timezone from /health — every slot time on this page is in it.
+  const [clinicTz, setClinicTz] = useState('')
+  const tzNote = clinicTz ? ` All times are clinic time (${tzAbbreviation(clinicTz)}, ${clinicTz}).` : ''
 
   const load = () => {
     setLoading(true); setError('')
+    api.health().then((h) => setClinicTz(h.timezone || '')).catch(() => {})
     api.appointments().then(setAppts).catch((e: Error) => setError(e.message)).finally(() => setLoading(false))
   }
   useEffect(load, [])
@@ -51,7 +56,7 @@ export default function Appointments() {
   )
   if (error) return (
     <div className="space-y-4">
-      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend.</p></div>
+      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend.{tzNote}</p></div>
       <Card>
         <CardContent className="flex flex-col items-start gap-3 p-6">
           <div className="flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400"><AlertTriangle className="h-4 w-4" />Could not load appointments</div>
@@ -65,7 +70,7 @@ export default function Appointments() {
   return (
     <div className="space-y-4">
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again. Demo data — bookings made by simulated demo calls.</p></div>
+      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again. Demo data — bookings made by simulated demo calls.{tzNote}</p></div>
       {appts.length === 0 && (
         <EmptyState icon={CalendarCheck2} title="No appointments yet" desc="Appointments booked by the agent show up here with the service, time and caller." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
       )}

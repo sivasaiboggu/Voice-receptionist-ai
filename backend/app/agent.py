@@ -9,7 +9,6 @@ The state machine itself is dependency-light so tests run anywhere.
 """
 import os
 import re
-from datetime import datetime
 
 from . import booking, rag
 from .db import db, init_db
@@ -243,7 +242,7 @@ class VoiceAgent:
         service = extract_service(text)
         if slot:
             slot_dt = booking.parse_slot(slot)
-            if slot_dt is not None and slot_dt < datetime.now():
+            if slot_dt is not None and slot_dt < booking.now_clinic():
                 return self.say(
                     "Agent",
                     f"That time ({slot}) is in the past — our next available times are: "
@@ -331,7 +330,7 @@ class VoiceAgent:
         with db() as conn:
             conn.execute(
                 "INSERT INTO messages (caller, message, created_at) VALUES (?,?,?)",
-                (self.caller, text, datetime.now().isoformat()),
+                (self.caller, text, booking.now_utc().isoformat()),
             )
         self.outcome = "message-taken"
         self.state = "confirm"
@@ -347,7 +346,7 @@ class VoiceAgent:
                    sentiment, urgency, outcome, escalated)
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (
-                    self.caller, datetime.now().isoformat(), transcript, summary,
+                    self.caller, booking.now_utc().isoformat(), transcript, summary,
                     last["sentiment"], last["urgency"],
                     self.outcome or "answered", 1 if self.escalated else 0,
                 ),

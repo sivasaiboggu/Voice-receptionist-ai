@@ -109,9 +109,11 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.2.0",
+        "version": "0.2.2",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
+        # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".
+        "timezone": booking.clinic_tz_name(),
     }
 
 
@@ -174,7 +176,9 @@ def appointments():
 
 @app.get("/slots")
 def slots(limit: int = Query(default=20, ge=1, le=100)):
-    return {"available": booking.available_slots(limit=limit)}
+    # `timezone` names the zone the slot strings are in, so a dashboard
+    # in another timezone can label them instead of guessing.
+    return {"available": booking.available_slots(limit=limit), "timezone": booking.clinic_tz_name()}
 
 
 @app.get("/calls")

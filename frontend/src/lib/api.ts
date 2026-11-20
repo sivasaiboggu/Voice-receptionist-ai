@@ -16,7 +16,7 @@ export const API: string = rawApiUrl
 /** True when the dashboard knows where the backend is (always in dev). */
 export const isApiConfigured = import.meta.env.DEV || Boolean(rawApiUrl)
 
-export type Health = { ok: boolean; service: string; version: string; demo_mode: boolean; database: string }
+export type Health = { ok: boolean; service: string; version: string; demo_mode: boolean; database: string; timezone: string }
 export type Call = { id: number; caller: string; summary: string; sentiment: string; urgency: string; outcome: string; escalated: number; started_at?: string; transcript?: string }
 export type Appt = { id: number; patient_name: string; phone?: string; service: string; slot: string; status: string; created_at?: string }
 export type Stats = { calls_answered: number; appointments_booked: number; escalations: number; unhandled_messages: number; answer_rate: number }
@@ -79,7 +79,7 @@ export const api = {
   calls: () => get<Call[]>('/calls'),
   appointments: () => get<Appt[]>('/appointments'),
   messages: () => get<Message[]>('/messages'),
-  slots: () => get<{ available: string[] }>('/slots'),
+  slots: () => get<{ available: string[]; timezone: string }>('/slots'),
   analytics: () => get<Stats>('/analytics'),
   demoCall: (turns?: string[]) => post<any>('/call/demo', turns ? { turns } : {}),
   cancelAppointment: (slot: string, patient_name?: string) =>

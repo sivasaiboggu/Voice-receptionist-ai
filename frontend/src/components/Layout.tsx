@@ -4,7 +4,7 @@ import { CalendarDays, LayoutDashboard, Moon, PhoneCall, Phone, Sun, Stethoscope
 import { useTheme } from './ThemeProvider'
 import { api } from '../lib/api'
 import { Button } from './ui/button'
-import { cn } from '../lib/utils'
+import { cn, tzAbbreviation } from '../lib/utils'
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
@@ -19,10 +19,12 @@ export default function Layout() {
   // "Agent online" pill claimed the agent was up even when the API
   // was down or unconfigured. While checking, say so honestly.
   const [backend, setBackend] = useState<'checking' | 'online' | 'offline'>('checking')
+  // Clinic timezone from /health — slot times everywhere are clinic-local.
+  const [clinicTz, setClinicTz] = useState('')
   useEffect(() => {
     let alive = true
     api.health()
-      .then((h) => { if (alive) setBackend(h.ok && h.database === 'ok' ? 'online' : 'offline') })
+      .then((h) => { if (alive) { setBackend(h.ok && h.database === 'ok' ? 'online' : 'offline'); setClinicTz(h.timezone || '') } })
       .catch(() => { if (alive) setBackend('offline') })
     return () => { alive = false }
   }, [])
@@ -64,7 +66,7 @@ export default function Layout() {
         <div className="min-w-0 flex-1">
           <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b bg-background/80 px-4 backdrop-blur md:px-8">
             <div className="flex items-center gap-2 md:hidden"><Stethoscope className="h-5 w-5 text-primary" /><span className="font-bold">Voice Receptionist</span></div>
-            <div className="hidden text-sm text-muted-foreground md:block">Today · <span className="font-medium text-foreground">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
+            <div className="hidden text-sm text-muted-foreground md:block">Today · <span className="font-medium text-foreground">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</span>{clinicTz && <> · <span className="font-medium text-foreground">{tzAbbreviation(clinicTz)}</span> <span className="text-xs">({clinicTz})</span></>}</div>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={toggle} aria-label="Toggle theme">{theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{theme === 'dark' ? 'Light' : 'Dark'}</Button>
             </div>

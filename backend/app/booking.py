@@ -8,11 +8,52 @@ Safety guarantees:
 - Past slots are never offered or bookable.
 - Patient name, phone, service and slot format are validated before any write.
 - Service names are matched case-insensitively ("teeth cleaning" works).
+- Timezone-aware: slot strings in the DB are clinic-local times
+  ("YYYY-MM-DD HH:MM" in CLINIC_TZ, default Asia/Kolkata). "Past" is
+  judged against the clinic clock, not the server clock — a server on
+  UTC used to offer slots that had already passed in India, and to
+  skip the first clinic day when it was already tomorrow in IST.
+  created_at stamps are UTC so they are unambiguous anywhere.
 """
+import os
 import re
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from .db import db, init_db
+
+def _resolve_clinic_tz():
+    """Clinic timezone from CLINIC_TZ (IANA name, default Asia/Kolkata).
+
+    An unknown name falls back to UTC with a stderr warning instead of
+    crashing the server at import.
+    """
+    name = (os.environ.get("CLINIC_TZ") or "Asia/Kolkata").strip() or "Asia/Kolkata"
+    try:
+        return ZoneInfo(name), name
+    except Exception:
+        print(f"[booking] WARNING: unknown CLINIC_TZ {name!r}; falling back to UTC", file=sys.stderr)
+        return ZoneInfo("UTC"), "UTC"
+
+
+CLINIC_TZ, CLINIC_TZ_NAME = _resolve_clinic_tz()
+
+
+def clinic_tz_name():
+    """IANA name of the clinic timezone, e.g. 'Asia/Kolkata'."""
+    return CLINIC_TZ_NAME
+
+
+def now_clinic():
+    """Aware 'now' in the clinic timezone — the clock slots are judged by."""
+    return datetime.now(CLINIC_TZ)
+
+
+def now_utc():
+    """Aware 'now' in UTC — used for created_at stamps."""
+    return datetime.now(timezone.utc)
+
 
 SERVICES = {
     "General checkup": {"price": 500, "minutes": 30},
@@ -42,11 +83,12 @@ def normalise_service(service):
 
 
 def parse_slot(slot):
-    """Parse 'YYYY-MM-DD HH:MM' strictly; returns a datetime or None."""
+    """Parse 'YYYY-MM-DD HH:MM' strictly; returns an aware datetime in
+    the clinic timezone, or None. Slot strings are always clinic-local."""
     if not slot or not isinstance(slot, str) or not _SLOT_RE.match(slot.strip()):
         return None
     try:
-        return datetime.strptime(slot.strip(), "%Y-%m-%d %H:%M")
+        return datetime.strptime(slot.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=CLINIC_TZ)
     except ValueError:
         return None
 
@@ -69,7 +111,7 @@ def validate_booking(patient_name, phone, service, slot):
     slot_dt = parse_slot(slot)
     if slot_dt is None:
         return None, None, f"That time ({slot}) isn't a valid slot — pick a time from the available list, e.g. YYYY-MM-DD HH:MM."
-    if slot_dt < datetime.now():
+    if slot_dt < now_clinic():
         return None, None, f"That time ({slot}) is in the past — please pick a future slot."
     if slot_dt.minute not in (0, 30) or slot_dt.second:
         return None, None, f"Appointments start on the hour or half hour — {slot} isn't a valid slot."
@@ -77,8 +119,16 @@ def validate_booking(patient_name, phone, service, slot):
 
 
 def generate_slots(days=7, start=None):
-    """Generate 30-minute slots for the next `days` days (Mon-Sat 9-20, Sun 10-14)."""
-    start = start or datetime.now().date()
+    """Generate 30-minute slots for the next `days` days (Mon-Sat 9-20, Sun 10-14).
+
+    `start` is the first clinic-local date (a date, or a datetime which is
+    converted to the clinic timezone first); it defaults to today in the
+    clinic timezone, not the server's local date.
+    """
+    if start is None:
+        start = now_clinic().date()
+    elif isinstance(start, datetime):
+        start = start.astimezone(CLINIC_TZ).date()
     slots = []
     for d in range(days):
         day = start + timedelta(days=d)
@@ -106,7 +156,10 @@ def available_slots(service=None, limit=20):
     except (TypeError, ValueError):
         limit = 20
     limit = max(1, min(limit, 100))
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Compare against the clinic clock: a slot that already passed in
+    # clinic time must not be offered even if it is still "future" on
+    # a server running in another timezone (e.g. UTC).
+    now = now_clinic().strftime("%Y-%m-%d %H:%M")
     with db() as conn:
         rows = conn.execute(
             "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT ?",
@@ -140,12 +193,12 @@ def book(patient_name, phone, service, slot):
                 "UPDATE appointments SET patient_name=?, phone=?, service=?, "
                 "created_at=?, status='booked', confirmation_sent=0 "
                 "WHERE slot=? AND status='cancelled'",
-                (patient_name, phone, canonical, datetime.now().isoformat(), slot),
+                (patient_name, phone, canonical, now_utc().isoformat(), slot),
             )
             if cur.rowcount == 0:
                 conn.execute(
                     "INSERT INTO appointments (patient_name, phone, service, slot, created_at) VALUES (?,?,?,?,?)",
-                    (patient_name, phone, canonical, slot, datetime.now().isoformat()),
+                    (patient_name, phone, canonical, slot, now_utc().isoformat()),
                 )
         except Exception:
             # UNIQUE(slot) second line of defence: release the slot again.

@@ -163,6 +163,19 @@ cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
 
+## What changed in v0.2.2 (timezone-aware booking)
+
+- **Booking is timezone-aware** — slot times are clinic-local
+  (`CLINIC_TZ`, default `Asia/Kolkata`). "Past" is judged against the
+  clinic clock, not the server clock: on a UTC server the old naive
+  code offered slots that had already passed in India and skipped the
+  first clinic day when it was already tomorrow in IST. `created_at`
+  stamps are now UTC. `GET /slots` and `GET /health` report the
+  `timezone` so dashboards label times instead of guessing.
+- **Dashboard** — the header shows the clinic timezone (e.g. "IST
+  (Asia/Kolkata)") and Appointments notes that all times are clinic
+  time. Demo-data labels unchanged. 50 tests (was 39).
+
 ## What changed in v0.2.1 (production hardening)
 
 - **Backend** — CORS via `CORS_ORIGINS` (a Vercel dashboard was previously
@@ -208,6 +221,7 @@ curl localhost:8001/health
 | `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API. Defaults to local Vite dev servers. Set to the Vercel URL in production. |
 | `VITE_API_URL` | Frontend only (set in Vercel). The deployed backend URL. Required in production; dev defaults to `http://localhost:8001`. |
 | `DEMO_MODE` | `true` by default — simulated calls, no keys. Reported by `GET /health`. |
+| `CLINIC_TZ` | IANA timezone slot times are in, e.g. `Asia/Kolkata` (default). "Past" is judged against this clock, not the server's. Reported by `GET /health` and `GET /slots`. |
 
 ## Safety
 
