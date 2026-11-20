@@ -109,7 +109,7 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.2.2",
+        "version": "0.3.0",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
         # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".

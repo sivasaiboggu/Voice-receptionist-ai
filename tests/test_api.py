@@ -140,3 +140,52 @@ def test_notify_sms_stays_in_demo_mode(client):
     assert r.status_code == 200
     assert r.json()["sent"] is False
     assert r.json()["mode"] == "demo"
+
+
+def test_live_call_session_start_turn_end(client):
+    """The turn-by-turn session flow the Live Call page drives: start greets,
+    each turn returns the agent reply with intent/state, end logs the call
+    and returns the transcript, summary and outcome."""
+    r = client.post("/call/start", params={"caller": "+919999999999"})
+    assert r.status_code == 200
+    assert "Sunrise Dental Clinic" in r.json()["reply"]
+
+    r = client.post("/call/turn", json={"caller": "+919999999999", "text": "What are your opening hours?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["intent"] in ("hours", "faq")
+    assert body["state"] == "confirm"
+    assert body["reply"]
+
+    r = client.post("/call/end", params={"caller": "+919999999999"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["outcome"] == "answered"
+    assert "Agent: Hello" in body["transcript"]
+    assert "opening hours" in body["transcript"].lower()
+    assert body["summary"]
+
+
+def test_live_call_turn_escalates_and_end_reports_it(client):
+    client.post("/call/start", params={"caller": "+918888888888"})
+    r = client.post("/call/turn", json={"caller": "+918888888888", "text": "I am in terrible pain and bleeding"})
+    assert r.json()["intent"] == "emergency"
+    assert r.json()["state"] == "escalate"
+    body = client.post("/call/end", params={"caller": "+918888888888"}).json()
+    assert body["escalated"] is True
+    assert body["outcome"] == "escalated-emergency"
+
+
+def test_call_end_without_active_call_is_not_ok(client):
+    r = client.post("/call/end", params={"caller": "+917777777777"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_call_turn_empty_text_is_handled_not_a_crash(client):
+    client.post("/call/start", params={"caller": "+916666666666"})
+    r = client.post("/call/turn", json={"caller": "+916666666666", "text": ""})
+    assert r.status_code == 200
+    assert r.json()["intent"] == "unknown"
+    assert "didn't quite catch" in r.json()["reply"]

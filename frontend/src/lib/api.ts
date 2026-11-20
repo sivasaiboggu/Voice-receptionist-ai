@@ -82,6 +82,16 @@ export const api = {
   slots: () => get<{ available: string[]; timezone: string }>('/slots'),
   analytics: () => get<Stats>('/analytics'),
   demoCall: (turns?: string[]) => post<any>('/call/demo', turns ? { turns } : {}),
+  // Live turn-by-turn session: start greets, each turn returns the agent
+  // reply with intent/state, end logs the call and returns its summary.
+  startCall: (caller = '+919573719115') => post<{ reply: string }>(`/call/start?caller=${encodeURIComponent(caller)}`),
+  callTurn: (caller: string, text: string) =>
+    post<{ reply: string; intent: string; state: string }>('/call/turn', { caller, text }),
+  endCall: (caller = '+919573719115') => post<any>(`/call/end?caller=${encodeURIComponent(caller)}`),
+  bookAppointment: (patient_name: string, service: string, slot: string, phone = '+919573719115') =>
+    post<{ ok: boolean; message: string; follow_up_sms?: string }>('/call/book', { patient_name, service, slot, phone }),
+  notifySms: (to: string, body: string) =>
+    post<{ sent: boolean; mode: string; sid?: string; error?: string }>('/notify/sms', { to, body }),
   cancelAppointment: (slot: string, patient_name?: string) =>
     post<{ ok: boolean; message: string }>('/call/cancel', { slot, patient_name }),
 }

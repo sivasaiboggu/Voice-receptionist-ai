@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 39 tests
+.venv/bin/python -m pytest tests/ -q             # 54 tests
 ```
 
 Run the API:
@@ -162,6 +162,29 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.0 (advanced UX)
+
+- **Live call, turn by turn** — the Live Call page now drives the real
+  session API (`/call/start` → `/call/turn` → `/call/end`) instead of
+  running the whole demo in one request: each exchange appears as a chat
+  bubble as it lands, with a typing indicator, a live call timer, and a
+  step indicator driven by the agent's real state. You can also talk to
+  the agent yourself — type the caller's lines free-text. Scripted
+  scenarios still auto-book the first free slot when the call is not
+  escalated, exactly as the demo did.
+- **SMS preview before sending** — after a call ends, the follow-up SMS
+  draft shows in a phone-style preview with a character count, a copy
+  button, and a Send button that calls `POST /notify/sms`. The result is
+  reported honestly: in demo mode it records the draft and sends nothing
+  (no Twilio keys); with Twilio configured it really sends.
+- **Calls: search + filters** — search caller, summary or transcript,
+  filter by outcome and urgency, escalated-only toggle, with a live
+  "Showing X of Y calls" count and a clear-filters action.
+- **Appointments: calendar view** — a 14-day calendar alongside the list,
+  bookings grouped by day with status colours; click a day to see that
+  day's appointments and cancel from there. Booking rules unchanged
+  (timezone-aware, atomic slot claim). 54 tests (was 50).
 
 ## What changed in v0.2.2 (timezone-aware booking)
 
