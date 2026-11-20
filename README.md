@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 7 tests
+.venv/bin/python -m pytest tests/ -q             # 34 tests
 ```
 
 Run the API:
@@ -83,7 +83,8 @@ Run the API:
 .venv/bin/uvicorn backend.app.api:app --port 8001
 # GET  /health        GET  /analytics   GET  /calls
 # POST /call/demo     GET  /slots       GET  /appointments
-# POST /voice/incoming   (Twilio webhook)
+# POST /call/cancel   GET  /messages
+# POST /voice/incoming   (Twilio webhook, returns XML TwiML)
 ```
 
 Run the dashboard:
@@ -115,6 +116,22 @@ curl -X POST localhost:8001/call/start
 curl -X POST localhost:8001/call/turn -H 'Content-Type: application/json' \
   -d '{"text": "I am in terrible pain, I need help today"}'
 ```
+
+## What changed in v0.2
+
+- **Booking is safe under concurrency** — slots are claimed with one
+  atomic conditional update; past and malformed slots are rejected;
+  cancelling frees the slot and it can be booked again.
+- **Agent understands more, invents less** — whole-word intent matching
+  ("visited" is not a booking), a real cancel/message multi-turn flow,
+  named-slot booking ("book teeth cleaning on 2026-11-21 10:00" → name →
+  booked), and RAG that reads `docs/kb/*.md` with cited, stemmed matching.
+- **API hardening** — request validation on every write endpoint,
+  `POST /call/cancel`, custom turns on `POST /call/demo`
+  (try an emergency demo), and real `application/xml` TwiML responses.
+- **Dashboard** — real call transcripts, retryable error states,
+  consistent empty states, appointment cancel buttons, demo scenarios
+  (Booking / Emergency / Price question), and a working End call button.
 
 ## Configuration
 

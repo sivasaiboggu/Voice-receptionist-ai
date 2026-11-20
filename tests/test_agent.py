@@ -78,3 +78,170 @@ def test_demo_call_books_and_logs():
     assert result["outcome"] == "booked"
     assert "Teeth cleaning" in result["transcript"] or result["follow_up_sms"]
     assert result["summary"]
+
+
+# --- Booking edge cases ---
+
+def test_past_slot_rejected():
+    booking.seed_slots()
+    ok, msg = booking.book("Asha", "+91 90000 00001", "General checkup", "2020-01-01 10:00")
+    assert ok is False
+    assert "past" in msg
+
+
+def test_malformed_slot_rejected():
+    booking.seed_slots()
+    for bad in ("tomorrow 10am", "2026-13-40 99:99", "2026-11-21 10:15", ""):
+        ok, _ = booking.book("Asha", "+91 90000 00001", "General checkup", bad)
+        assert ok is False, bad
+
+
+def test_invalid_name_and_phone_rejected():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    assert slots
+    ok, _ = booking.book("", "+91 90000 00001", "General checkup", slots[0])
+    assert ok is False
+    ok, _ = booking.book("Asha", "not-a-phone", "General checkup", slots[0])
+    assert ok is False
+
+
+def test_service_name_case_insensitive():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    ok, msg = booking.book("Asha", "+91 90000 00001", "teeth cleaning", slots[0])
+    assert ok is True
+    assert "Teeth cleaning" in msg
+
+
+def test_available_slots_exclude_past():
+    booking.seed_slots()
+    with __import__("backend.app.db", fromlist=["db"]).db() as conn:
+        conn.execute("INSERT OR IGNORE INTO slots (slot, available) VALUES ('2020-01-01 10:00', 1)")
+    assert "2020-01-01 10:00" not in booking.available_slots(limit=100)
+    assert all(s > "2020-01-01 10:00" for s in booking.available_slots(limit=100))
+
+
+def test_cancel_frees_slot_for_rebooking():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    ok, _ = booking.book("Asha", "+91 90000 00001", "General checkup", slots[0])
+    assert ok is True
+    ok, _ = booking.cancel(slots[0])
+    assert ok is True
+    assert slots[0] in booking.available_slots(limit=100)
+    ok, _ = booking.book("Ravi", "+91 90000 00002", "General checkup", slots[0])
+    assert ok is True
+
+
+def test_cancel_unknown_slot_fails():
+    ok, msg = booking.cancel("2026-11-21 10:00")
+    assert ok is False
+    assert "No booked appointment" in msg
+
+
+def test_cancel_with_wrong_name_fails():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    booking.book("Asha", "+91 90000 00001", "General checkup", slots[0])
+    ok, _ = booking.cancel(slots[0], patient_name="Ravi")
+    assert ok is False
+    ok, _ = booking.cancel(slots[0], patient_name="Asha")
+    assert ok is True
+
+
+# --- Intent classification ---
+
+def test_intent_word_boundaries():
+    assert va.classify_intent("I visited yesterday and it was great") != "book"
+    assert va.classify_intent("When do you do root canal?") == "services"
+    assert va.classify_intent("Please cancel my appointment") == "cancel"
+    assert va.classify_intent("What time do you open?") == "hours"
+    assert va.classify_intent("How much is a root canal?") == "price"
+    assert va.classify_intent("") == "unknown"
+    assert va.classify_intent("I need a human being, please") == "human"
+
+
+# --- RAG quality ---
+
+def test_rag_hours_not_returned_for_treatment_question():
+    r = rag.answer("When do you do root canal?")
+    assert "9:00 AM to 8:00 PM" not in r["answer"]
+    assert "6,000" in r["answer"]
+
+
+def test_rag_accepts_inflected_words():
+    r = rag.answer("Do you accept insurance?")
+    assert r["in_kb"] is True
+    assert "insurance" in r["answer"].lower() or "insurer" in r["answer"].lower()
+
+
+# --- Agent multi-turn flows ---
+
+def test_agent_empty_turn_asks_for_clarification():
+    ag = va.VoiceAgent(caller="+91 90000 00003")
+    ag.greet()
+    reply = ag.handle("   ")
+    assert "didn't quite catch" in reply
+
+
+def test_agent_cancel_flow():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    booking.book("Asha", "+91 90000 00001", "General checkup", slots[0])
+    ag = va.VoiceAgent(caller="+91 90000 00001")
+    ag.greet()
+    ag.handle("I want to cancel my appointment")
+    assert ag.state == "cancel"
+    ag.handle(f"Yes, cancel {slots[0]}")
+    assert ag.outcome == "cancelled"
+    assert slots[0] in booking.available_slots(limit=100)
+
+
+def test_agent_message_flow():
+    ag = va.VoiceAgent(caller="+91 90000 00004")
+    ag.greet()
+    ag.handle("Please take a message")
+    assert ag.state == "message"
+    ag.handle("Call me back about my bill, please")
+    assert ag.outcome == "message-taken"
+
+
+def test_agent_books_named_slot_then_name():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    ag = va.VoiceAgent(caller="+91 90000 00005")
+    ag.greet()
+    reply = ag.handle(f"Book teeth cleaning on {slots[0]}")
+    assert "available" in reply and "your name" in reply
+    ag.handle("Asha")
+    assert ag.outcome == "booked"
+    assert ag.follow_up_sms and "Asha" in ag.follow_up_sms
+
+
+def test_agent_failed_booking_clears_stale_sms():
+    booking.seed_slots()
+    slots = booking.available_slots(limit=1)
+    ag = va.VoiceAgent(caller="+91 90000 00006")
+    ag.book("Asha", "Teeth cleaning", slots[0])
+    assert ag.follow_up_sms
+    ok, _ = ag.book("Ravi", "Teeth cleaning", slots[0])
+    assert ok is False
+    assert ag.follow_up_sms is None
+
+
+def test_demo_escalation_does_not_book():
+    result = va.run_demo_call(turns=["I am in terrible pain and bleeding"])
+    assert result["outcome"] == "escalated-emergency"
+    assert result["escalated"] is True
+    assert result["follow_up_sms"] is None
+
+
+def test_twiml_escapes_special_characters():
+    import xml.etree.ElementTree as ET
+
+    from backend.app.voice.twilio_voice import twiml_say
+
+    xml = twiml_say("Tom & Jerry <3")
+    ET.fromstring(xml)  # raises if the XML is malformed
+    assert "&amp;" in xml

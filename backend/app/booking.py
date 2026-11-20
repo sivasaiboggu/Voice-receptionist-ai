@@ -1,5 +1,15 @@
-"""Appointment booking: slot generation, double-booking prevention, confirmations."""
-import os
+"""Appointment booking: slot generation, double-booking prevention, confirmations.
+
+Safety guarantees:
+- Booking is atomic: a single conditional UPDATE claims the slot, so two
+  concurrent requests can never book the same slot (the old SELECT-then-
+  UPDATE had a race). The appointments.slot UNIQUE constraint is a second
+  line of defence and IntegrityError is handled, not raised.
+- Past slots are never offered or bookable.
+- Patient name, phone, service and slot format are validated before any write.
+- Service names are matched case-insensitively ("teeth cleaning" works).
+"""
+import re
 from datetime import datetime, timedelta
 
 from .db import db, init_db
@@ -12,7 +22,58 @@ SERVICES = {
     "Braces consultation": {"price": 800, "minutes": 30},
 }
 
-OPEN_HOURS = [(9, 13), (14, 20)]  # 9-13, 14-20 (lunch 13:30-14:30 simplified to 13-14)
+OPEN_HOURS = [(9, 13), (14, 20)]  # 9-13, 14-20 (lunch 13-14; KB lunch break is 13:30-14:30)
+
+_SLOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+# Loose phone check: optional +, digits/spaces/hyphens, 7-15 digits. Demo
+# numbers such as +91 00000 00000 pass; garbage such as "abc" does not.
+_PHONE_RE = re.compile(r"^\+?[0-9][0-9\s\-]{6,18}$")
+
+
+def normalise_service(service):
+    """Case-insensitive service lookup; returns the canonical name or None."""
+    if not service or not isinstance(service, str):
+        return None
+    key = service.strip().lower()
+    for name in SERVICES:
+        if name.lower() == key:
+            return name
+    return None
+
+
+def parse_slot(slot):
+    """Parse 'YYYY-MM-DD HH:MM' strictly; returns a datetime or None."""
+    if not slot or not isinstance(slot, str) or not _SLOT_RE.match(slot.strip()):
+        return None
+    try:
+        return datetime.strptime(slot.strip(), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def validate_booking(patient_name, phone, service, slot):
+    """Validate a booking request. Returns (canonical_service, slot_dt, error).
+
+    `error` is None when the request is valid; otherwise a human-readable
+    message explaining what is wrong.
+    """
+    if not patient_name or not str(patient_name).strip():
+        return None, None, "Please give the patient's name so we can book the appointment."
+    if len(str(patient_name).strip()) > 100:
+        return None, None, "That name looks too long — please give a shorter name."
+    if not phone or not _PHONE_RE.match(str(phone).strip()):
+        return None, None, "That phone number doesn't look valid — please give a number we can reach you on."
+    canonical = normalise_service(service)
+    if canonical is None:
+        return None, None, f"Sorry, we don't offer '{service}'. Available: {', '.join(SERVICES)}."
+    slot_dt = parse_slot(slot)
+    if slot_dt is None:
+        return None, None, f"That time ({slot}) isn't a valid slot — pick a time from the available list, e.g. YYYY-MM-DD HH:MM."
+    if slot_dt < datetime.now():
+        return None, None, f"That time ({slot}) is in the past — please pick a future slot."
+    if slot_dt.minute not in (0, 30) or slot_dt.second:
+        return None, None, f"Appointments start on the hour or half hour — {slot} isn't a valid slot."
+    return canonical, slot_dt, None
 
 
 def generate_slots(days=7, start=None):
@@ -39,31 +100,60 @@ def seed_slots():
 
 
 def available_slots(service=None, limit=20):
+    """Future, still-free slots only, earliest first. `limit` is clamped."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     with db() as conn:
         rows = conn.execute(
-            "SELECT slot FROM slots WHERE available=1 ORDER BY slot LIMIT ?", (limit,)
+            "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT ?",
+            (now, limit),
         ).fetchall()
     return [r["slot"] for r in rows]
 
 
 def book(patient_name, phone, service, slot):
     """Book a slot. Returns (ok, message). Double-booking is rejected atomically."""
-    if service not in SERVICES:
-        return False, f"Sorry, we don't offer '{service}'. Available: {', '.join(SERVICES)}."
+    canonical, _slot_dt, error = validate_booking(patient_name, phone, service, slot)
+    if error:
+        return False, error
+    slot = slot.strip()
+    patient_name = str(patient_name).strip()
+    phone = str(phone).strip()
     with db() as conn:
         row = conn.execute("SELECT available FROM slots WHERE slot=?", (slot,)).fetchone()
         if row is None:
             return False, f"That time ({slot}) is outside our hours — pick a slot from the available list."
-        if row["available"] == 0:
-            return False, f"Sorry, {slot} is already booked. Please pick another time."
-        conn.execute("UPDATE slots SET available=0 WHERE slot=?", (slot,))
-        conn.execute(
-            "INSERT INTO appointments (patient_name, phone, service, slot, created_at) VALUES (?,?,?,?,?)",
-            (patient_name, phone, service, slot, datetime.now().isoformat()),
+        # Atomic claim: only one writer can flip available 1 -> 0.
+        cur = conn.execute(
+            "UPDATE slots SET available=0 WHERE slot=? AND available=1", (slot,)
         )
+        if cur.rowcount == 0:
+            return False, f"Sorry, {slot} is already booked. Please pick another time."
+        try:
+            # A cancelled appointment still holds the UNIQUE(slot) row: reuse
+            # it for the new booking instead of failing on the constraint.
+            cur = conn.execute(
+                "UPDATE appointments SET patient_name=?, phone=?, service=?, "
+                "created_at=?, status='booked', confirmation_sent=0 "
+                "WHERE slot=? AND status='cancelled'",
+                (patient_name, phone, canonical, datetime.now().isoformat(), slot),
+            )
+            if cur.rowcount == 0:
+                conn.execute(
+                    "INSERT INTO appointments (patient_name, phone, service, slot, created_at) VALUES (?,?,?,?,?)",
+                    (patient_name, phone, canonical, slot, datetime.now().isoformat()),
+                )
+        except Exception:
+            # UNIQUE(slot) second line of defence: release the slot again.
+            conn.execute("UPDATE slots SET available=1 WHERE slot=?", (slot,))
+            return False, f"Sorry, {slot} is already booked. Please pick another time."
     return True, (
-        f"Booked: {service} for {patient_name} on {slot} "
-        f"(Rs {SERVICES[service]['price']}). A confirmation will be sent to {phone}."
+        f"Booked: {canonical} for {patient_name} on {slot} "
+        f"(Rs {SERVICES[canonical]['price']}). A confirmation will be sent to {phone}."
     )
 
 
@@ -73,10 +163,31 @@ def list_appointments():
     return [dict(r) for r in rows]
 
 
-def cancel(slot):
+def cancel(slot, patient_name=None):
+    """Cancel the booked appointment on `slot`.
+
+    If `patient_name` is given it must match, so one caller cannot cancel
+    someone else's appointment by guessing a time. Returns (ok, message).
+    """
+    slot_dt = parse_slot(slot)
+    if slot_dt is None:
+        return False, f"That time ({slot}) isn't a valid slot — please give the date and time of the appointment, e.g. YYYY-MM-DD HH:MM."
+    slot = slot.strip()
     with db() as conn:
-        cur = conn.execute("UPDATE appointments SET status='cancelled' WHERE slot=? AND status='booked'", (slot,))
+        if patient_name:
+            cur = conn.execute(
+                "UPDATE appointments SET status='cancelled' "
+                "WHERE slot=? AND status='booked' AND lower(patient_name)=lower(?)",
+                (slot, str(patient_name).strip()),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE appointments SET status='cancelled' WHERE slot=? AND status='booked'",
+                (slot,),
+            )
         if cur.rowcount:
             conn.execute("UPDATE slots SET available=1 WHERE slot=?", (slot,))
             return True, f"Cancelled the appointment on {slot}."
+    if patient_name:
+        return False, f"No booked appointment found on {slot} under that name."
     return False, f"No booked appointment found on {slot}."

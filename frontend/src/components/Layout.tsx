@@ -47,10 +47,10 @@ export default function Layout() {
               <Button variant="outline" size="sm" onClick={toggle} aria-label="Toggle theme">{theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{theme === 'dark' ? 'Light' : 'Dark'}</Button>
             </div>
           </header>
-          <main className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8"><Outlet /></main>
+          <main className="mx-auto w-full max-w-6xl px-4 pb-24 pt-6 md:px-8 md:pb-8">{/* pb-24 clears the mobile bottom nav */}<Outlet /></main>
         </div>
       </div>
-      <nav className="fixed bottom-0 left-0 right-0 z-20 flex justify-around border-t bg-background/95 py-2 backdrop-blur md:hidden">
+      <nav aria-label="Primary" className="fixed bottom-0 left-0 right-0 z-20 flex justify-around border-t bg-background/95 py-2 backdrop-blur md:hidden">
         {nav.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => cn('flex flex-col items-center gap-1 text-[11px] font-medium', isActive ? 'text-primary' : 'text-muted-foreground')}>
             <n.icon className="h-5 w-5" />{n.label}

@@ -10,6 +10,7 @@ SMS/WhatsApp confirmation: Twilio sandbox (free) or Meta WhatsApp Cloud API.
 All of it is optional — demo mode simulates the same turns over HTTP.
 """
 import os
+from xml.sax.saxutils import escape as xml_escape
 
 TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -17,6 +18,9 @@ TWILIO_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
 
 
 def twiml_gather(prompt, action="/voice/gather"):
+    # Prompt text is escaped: a caller saying "Tom & Jerry" must not break
+    # the TwiML XML or inject markup.
+    prompt = xml_escape(prompt)
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>'
         f"<Response><Gather input=\"speech\" action=\"{action}\" method=\"POST\" "
@@ -28,12 +32,20 @@ def twiml_gather(prompt, action="/voice/gather"):
 def twiml_say(text):
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        f"<Response><Say voice=\"Polly.Aditi\">{text}</Say></Response>"
+        f"<Response><Say voice=\"Polly.Aditi\">{xml_escape(text)}</Say></Response>"
     )
 
 
 def send_sms(to, body):
-    """Send an SMS via Twilio if configured; otherwise return a demo record."""
+    """Send an SMS via Twilio if configured; otherwise return a demo record.
+
+    Never sends anything without Twilio credentials, and never calls the
+    Twilio API with an invalid destination — bad input fails as a demo
+    record with an error instead of raising.
+    """
+    if not to or not isinstance(to, str) or not body or not str(body).strip():
+        return {"sent": False, "mode": "demo", "to": to, "body": body,
+                "error": "A destination number and a message body are required."}
     if not (TWILIO_SID and TWILIO_TOKEN and TWILIO_NUMBER):
         return {"sent": False, "mode": "demo", "to": to, "body": body}
     from twilio.rest import Client

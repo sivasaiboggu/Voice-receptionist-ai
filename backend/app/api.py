@@ -4,8 +4,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Query
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from backend.app import agent as voice_agent
 from backend.app import booking
@@ -17,44 +18,82 @@ init_db()
 booking.seed_slots()
 
 _sessions = {}
+_MAX_SESSIONS = 100
+
+
+def _get_session(caller):
+    ag = _sessions.get(caller)
+    if ag is None:
+        ag = voice_agent.VoiceAgent(caller=caller)
+        if len(_sessions) >= _MAX_SESSIONS:
+            _sessions.pop(next(iter(_sessions)))  # evict the oldest session
+        _sessions[caller] = ag
+    return ag
 
 
 class Turn(BaseModel):
     caller: str = "+919573719115"
-    text: str
+    text: str = Field(default="", max_length=2000)
 
 
 class BookRequest(BaseModel):
-    patient_name: str
+    patient_name: str = Field(min_length=1, max_length=100)
     phone: str = "+919573719115"
-    service: str
-    slot: str
+    service: str = Field(min_length=1, max_length=100)
+    slot: str = Field(min_length=1, max_length=20)
+
+
+class CancelRequest(BaseModel):
+    slot: str = Field(min_length=1, max_length=20)
+    patient_name: str | None = Field(default=None, max_length=100)
+    phone: str = "+919573719115"
+
+
+class DemoRequest(BaseModel):
+    caller: str = "+919573719115"
+    turns: list[str] | None = Field(default=None, max_length=20)
+
+
+class SmsRequest(BaseModel):
+    to: str = Field(min_length=7, max_length=20)
+    body: str = Field(min_length=1, max_length=1000)
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "voice-receptionist-agent", "demo_mode": True}
+    return {"ok": True, "service": "voice-receptionist-agent", "version": "0.2.0", "demo_mode": True}
 
 
 @app.post("/call/start")
 def call_start(caller: str = "+919573719115"):
     ag = voice_agent.VoiceAgent(caller=caller)
+    if len(_sessions) >= _MAX_SESSIONS:
+        _sessions.pop(next(iter(_sessions)))
     _sessions[caller] = ag
     return {"reply": ag.greet()}
 
 
 @app.post("/call/turn")
 def call_turn(turn: Turn):
-    ag = _sessions.get(turn.caller) or voice_agent.VoiceAgent(caller=turn.caller)
-    _sessions[turn.caller] = ag
+    ag = _get_session(turn.caller)
     return {"reply": ag.handle(turn.text), "intent": ag.intent, "state": ag.state}
 
 
 @app.post("/call/book")
 def call_book(req: BookRequest):
-    ag = _sessions.get(req.phone) or voice_agent.VoiceAgent(caller=req.phone)
-    ok, msg = ag.book(req.patient_name, req.service, req.slot)
+    ag = _get_session(req.phone)
+    ok, msg = ag.book(req.patient_name.strip(), req.service, req.slot.strip())
     return {"ok": ok, "message": msg, "follow_up_sms": getattr(ag, "follow_up_sms", None)}
+
+
+@app.post("/call/cancel")
+def call_cancel(req: CancelRequest):
+    ag = _sessions.get(req.phone)
+    if ag is not None:
+        ok, msg = ag.cancel_booking(req.slot.strip(), patient_name=req.patient_name)
+    else:
+        ok, msg = booking.cancel(req.slot.strip(), patient_name=req.patient_name)
+    return {"ok": ok, "message": msg}
 
 
 @app.post("/call/end")
@@ -66,9 +105,15 @@ def call_end(caller: str = "+919573719115"):
 
 
 @app.post("/call/demo")
-def call_demo():
-    """Full simulated call end-to-end, no keys needed."""
-    return voice_agent.run_demo_call()
+def call_demo(req: DemoRequest | None = None):
+    """Full simulated call end-to-end, no keys needed.
+
+    Accepts optional custom turns, e.g. {"turns": ["I am in terrible pain"]}
+    to demo an escalation instead of the default booking flow.
+    """
+    caller = req.caller if req else "+919573719115"
+    turns = req.turns if req and req.turns else None
+    return voice_agent.run_demo_call(caller=caller, turns=turns)
 
 
 @app.get("/appointments")
@@ -77,7 +122,7 @@ def appointments():
 
 
 @app.get("/slots")
-def slots(limit: int = 20):
+def slots(limit: int = Query(default=20, ge=1, le=100)):
     return {"available": booking.available_slots(limit=limit)}
 
 
@@ -113,21 +158,22 @@ def analytics():
 
 @app.post("/voice/incoming")
 def voice_incoming():
+    # Twilio expects XML, not the JSON FastAPI returns for plain strings.
     ag = voice_agent.VoiceAgent()
-    return twiml_gather(ag.greet())
+    return Response(content=twiml_gather(ag.greet()), media_type="application/xml")
 
 
 @app.post("/voice/gather")
 def voice_gather(SpeechResult: str = "", From: str = "+919573719115"):
-    ag = _sessions.get(From) or voice_agent.VoiceAgent(caller=From)
-    _sessions[From] = ag
+    ag = _get_session(From)
     reply = ag.handle(SpeechResult or "Hello")
-    return twiml_say(reply)
+    return Response(content=twiml_say(reply), media_type="application/xml")
 
 
 @app.post("/notify/sms")
-def notify_sms(to: str, body: str):
-    return send_sms(to, body)
+def notify_sms(req: SmsRequest):
+    # Demo mode returns a draft record; nothing is sent without Twilio keys.
+    return send_sms(req.to, req.body)
 
 
 if __name__ == "__main__":

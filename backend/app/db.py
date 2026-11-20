@@ -8,7 +8,9 @@ DB_PATH = os.path.abspath(DB_PATH)
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    # timeout=30 so a locked SQLite file waits instead of failing instantly
+    # under uvicorn's thread pool; each request still gets its own connection.
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
