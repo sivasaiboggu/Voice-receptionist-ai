@@ -1,0 +1,10 @@
+services:
+  api:
+    build: .
+    ports: ["8001:8001"]
+    env_file: .env
+    volumes: ["./receptionist.db:/app/receptionist.db"]
+  dashboard:
+    build: ./frontend
+    ports: ["5174:5174"]
+    depends_on: [api]
