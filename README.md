@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 58 tests (60 with a live Postgres, see below)
+.venv/bin/python -m pytest tests/ -q             # 60 tests (62 with a live Postgres, see below)
 ```
 
 Run the API:
@@ -165,6 +165,46 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.3 (premium UI pass + senior logic review)
+
+- **Logic — `/voice/gather` fixed**: Twilio posts urlencoded form data, but
+  the endpoint read `SpeechResult`/`From` as query params, so every real
+  caller line arrived as `""` and the agent answered the "I don't have
+  that information" fallback. Now `Form(...)` params; a test posts form
+  data and asserts the hours answer.
+- **Logic — lunch-break slots**: slot generation offered 14:00/14:30
+  appointments while the knowledge base says lunch is 13:30–14:30 with
+  no appointments. Windows are now 9:00–13:30 and 14:30–20:00; a test
+  pins the edges.
+- **Logic — small hardening**: the agent now sets `intent` on the
+  early-return paths (cancel slot, take message, pending-name booking)
+  instead of leaking the previous turn's intent to `/call/turn`;
+  `send_sms` returns a demo record instead of a 500 when Twilio keys
+  are set but the `twilio` package is missing; the Live-call page's
+  End-call path can no longer race with the scripted loop and overwrite
+  the real summary with an empty `{ok: false}` result; the Appointments
+  calendar now starts on today in the clinic timezone instead of the
+  browser's date; dead code removed (`timeAgo`, `api.demoCall`,
+  `api.messages` client wrappers — backend endpoints untouched).
+- **UI — premium pass**: refined design tokens (0.875rem radius, shared
+  `--ring`, soft/lift/glow shadows, slim theme-aware scrollbars, selection
+  tint); glass sidebar/header/mobile nav with an aurora wash; gradient
+  brand mark and active-nav pill; caller bubbles as a primary gradient,
+  agent bubbles as soft-shadowed cards; step connectors fill as the call
+  progresses and the Live badge breathes; the SMS preview is a real
+  phone frame (notch, live clock, signal/wifi/battery); the calendar
+  has a month header, hover lift and status dots; the outcome bar chart
+  uses a vertical gradient and the sentiment donut shows its total in
+  the centre. No behaviour changes, no fake data.
+- **Dependencies** — no changes this round: every available frontend
+  update is a major (React 19, Tailwind 4, Vite 8, framer-motion 14,
+  recharts 3, react-router 7, TypeScript 7) and the backend updates are
+  transitive-only (protobuf 5 → 7 and uuid-utils 0 → 1 are majors, still
+  held back as in v0.3.2).
+- **Tests** — 60 passed, 2 skipped (the 2 live Postgres tests, skipped
+  without `VOICE_TEST_POSTGRES_URL`); with a local Postgres 16 the full
+  suite is 62 passed, 0 skipped.
 
 ## What changed in v0.3.2 (dashboard honesty fixes, patch dependency updates)
 

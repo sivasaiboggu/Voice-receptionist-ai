@@ -135,6 +135,21 @@ def test_voice_incoming_returns_xml(client):
     assert r.text.startswith("<?xml")
 
 
+def test_voice_gather_reads_twilio_form_data(client):
+    """Twilio posts urlencoded FORM data, not query params: the spoken
+    result must reach the agent, or every Twilio caller hears the
+    'I don't have that information' fallback for a question the KB
+    answers (regression: the old query-param signature dropped it)."""
+    r = client.post("/voice/gather", data={
+        "SpeechResult": "What are your opening hours?",
+        "From": "+919999999999",
+    })
+    assert r.status_code == 200
+    assert "application/xml" in r.headers["content-type"]
+    assert "9:00 AM" in r.text
+    assert "don't have that information" not in r.text
+
+
 def test_notify_sms_stays_in_demo_mode(client):
     r = client.post("/notify/sms", json={"to": "+919573719115", "body": "hello"})
     assert r.status_code == 200

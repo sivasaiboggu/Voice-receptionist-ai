@@ -177,10 +177,13 @@ class VoiceAgent:
         # the caller is answering our follow-up question, not starting over.
         slot = extract_slot(text)
         if self.state == "cancel" and slot:
+            self.intent = "cancel"
             return self._do_cancel(slot)
         if self.state == "message":
+            self.intent = "message"
             return self.take_message(text)
         if self.pending and NAME_RE.fullmatch(text.strip()) and classify_intent(text) == "faq":
+            self.intent = "book"
             service, pending_slot = self.pending
             self.pending = None
             _ok, msg = self.book(text.strip(), service, pending_slot)

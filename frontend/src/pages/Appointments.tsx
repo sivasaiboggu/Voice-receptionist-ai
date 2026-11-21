@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarX2, List, RefreshCw } from 'lucide-react'
@@ -23,13 +23,26 @@ export default function Appointments() {
   // List vs calendar view; calendar groups bookings by clinic-local day.
   const [view, setView] = useState<'list' | 'calendar'>('list')
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
+  // Clinic timezone from /health — every slot time on this page is in it.
+  const [clinicTz, setClinicTz] = useState('')
 
-  // Next 14 days as YYYY-MM-DD keys, starting today.
-  const days = (() => {
+  // Today in the CLINIC timezone, not the browser's: a viewer abroad
+  // would otherwise see "today" on the wrong clinic day, and the
+  // calendar groups bookings by clinic-local date. Falls back to the
+  // browser date until /health answers with the clinic zone.
+  const clinicTodayKey = useMemo(() => {
+    if (!clinicTz) return null
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: clinicTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+    } catch { return null }
+  }, [clinicTz])
+
+  // Next 14 days as YYYY-MM-DD keys, starting on clinic today.
+  const days = useMemo(() => {
     const out: { key: string; label: string; weekday: string; isToday: boolean }[] = []
-    const now = new Date()
+    const base = clinicTodayKey ? new Date(`${clinicTodayKey}T12:00:00`) : new Date()
     for (let i = 0; i < 14; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i)
+      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       out.push({
         key,
@@ -39,12 +52,19 @@ export default function Appointments() {
       })
     }
     return out
-  })()
+  }, [clinicTodayKey])
+
+  const monthLabel = useMemo(() => {
+    if (days.length === 0) return ''
+    const first = new Date(`${days[0].key}T12:00:00`)
+    const last = new Date(`${days[days.length - 1].key}T12:00:00`)
+    const fmt = (d: Date) => d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+    const f = fmt(first)
+    return f === fmt(last) ? f : `${first.toLocaleDateString('en-IN', { month: 'short' })} – ${fmt(last)}`
+  }, [days])
 
   const byDay = (key: string) => appts.filter((a) => a.slot.slice(0, 10) === key)
   const selectedAppts = selectedDay ? byDay(selectedDay) : []
-  // Clinic timezone from /health — every slot time on this page is in it.
-  const [clinicTz, setClinicTz] = useState('')
   const tzNote = clinicTz ? ` All times are clinic time (${tzAbbreviation(clinicTz)}, ${clinicTz}).` : ''
 
   const load = () => {
@@ -105,6 +125,10 @@ export default function Appointments() {
       )}
       {view === 'calendar' && appts.length > 0 && (
         <>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold tracking-tight">{monthLabel} <span className="font-normal text-muted-foreground">· next 14 days, clinic time</span></h2>
+            <span className="text-xs text-muted-foreground">Tap a day to see its appointments</span>
+          </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
             {days.map((d) => {
               const dayAppts = byDay(d.key)
@@ -114,7 +138,7 @@ export default function Appointments() {
                   key={d.key}
                   onClick={() => setSelectedDay(selectedDay === d.key ? null : d.key)}
                   aria-pressed={selectedDay === d.key}
-                  className={`min-h-24 rounded-lg border p-2 text-left transition-colors hover:border-primary ${selectedDay === d.key ? 'border-primary ring-2 ring-primary/30' : ''} ${d.isToday ? 'bg-primary/5' : 'bg-card'}`}
+                  className={`min-h-24 rounded-xl border p-2.5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/60 hover:shadow-lift ${selectedDay === d.key ? 'border-primary bg-primary/10 shadow-md ring-2 ring-primary/25' : ''} ${d.isToday ? 'bg-primary/5 ring-1 ring-inset ring-primary/20' : 'bg-card shadow-soft'}`}
                 >
                   <div className="flex items-baseline justify-between">
                     <span className="text-lg font-bold leading-none">{d.label}</span>
@@ -123,7 +147,8 @@ export default function Appointments() {
                   <div className="mt-2 space-y-1">
                     {dayAppts.length === 0 && <span className="text-xs text-muted-foreground">No bookings</span>}
                     {dayAppts.slice(0, 3).map((a) => (
-                      <div key={a.id} className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${a.status === 'booked' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 text-red-700 line-through dark:text-red-400'}`}>
+                      <div key={a.id} className={`flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${a.status === 'booked' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 text-red-700 line-through dark:text-red-400'}`}>
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.status === 'booked' ? 'bg-emerald-500' : 'bg-red-400'}`} />
                         {a.slot.slice(11)} {a.patient_name}
                       </div>
                     ))}
@@ -145,7 +170,7 @@ export default function Appointments() {
               <CardContent className="space-y-3">
                 {selectedAppts.length === 0 && <p className="text-sm text-muted-foreground">Nothing booked on this day yet.</p>}
                 {selectedAppts.map((a) => (
-                  <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3">
+                  <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-3 shadow-soft transition-colors hover:bg-accent/40">
                     <div>
                       <p className="text-sm font-medium">{a.patient_name} · {a.service}</p>
                       <p className="text-xs text-muted-foreground">{a.slot}{a.phone ? ` · ${a.phone}` : ''}</p>
@@ -175,7 +200,7 @@ export default function Appointments() {
       <div className="grid gap-4 sm:grid-cols-2">
         {appts.map((a, i) => (
           <motion.div key={a.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-            <Card>
+            <Card className="hover:-translate-y-0.5 hover:shadow-lift">
               <CardHeader className="flex-row flex-wrap items-center gap-3 space-y-0">
                 <CalendarCheck2 className="h-5 w-5 shrink-0 text-primary" />
                 <CardTitle className="min-w-0 flex-1 text-base">{a.patient_name}</CardTitle>

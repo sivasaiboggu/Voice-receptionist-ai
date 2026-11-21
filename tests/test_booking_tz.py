@@ -95,6 +95,20 @@ def test_generate_slots_starts_on_clinic_today(monkeypatch):
     assert slots[0].startswith(today_kiritimati)
 
 
+def test_no_slots_during_lunch_break():
+    """The KB says lunch is 13:30-14:30 with no appointments, so slot
+    generation must stop at 13:00 and resume at 14:30 — the old windows
+    (9-13, 14-20) offered 14:00 and 14:30 bookings during lunch."""
+    from datetime import date
+
+    slots = booking.generate_slots(days=1, start=date(2026, 11, 23))  # a Monday
+    times = [s[11:] for s in slots]
+    assert "13:00" in times
+    assert "14:30" in times
+    assert not [t for t in times if "13:30" <= t < "14:30"]
+    assert "14:00" not in times
+
+
 def test_available_slots_exclude_clinic_past():
     booking.seed_slots()
     past = _slot_string(booking.now_clinic() - timedelta(hours=1))

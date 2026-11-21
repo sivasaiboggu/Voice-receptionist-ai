@@ -108,7 +108,7 @@ export default function Calls() {
       )}
       {filtered.map((c, i) => (
         <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}>
-          <Card className="cursor-pointer transition-shadow hover:shadow-md" onClick={() => setOpen(open === c.id ? null : c.id)}>
+          <Card className="cursor-pointer hover:-translate-y-0.5 hover:shadow-lift" onClick={() => setOpen(open === c.id ? null : c.id)}>
             <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
               <CardTitle className="text-base">{c.caller} <span className="font-normal text-muted-foreground">— {c.summary}</span></CardTitle>
               <div className="flex flex-wrap gap-2">
@@ -120,9 +120,9 @@ export default function Calls() {
             {open === c.id && (
               <CardContent>
                 {c.transcript ? (
-                  <pre className="whitespace-pre-wrap rounded-lg bg-muted/60 p-4 text-sm leading-relaxed">{c.transcript}</pre>
+                  <pre className="whitespace-pre-wrap rounded-xl border bg-muted/50 p-4 text-sm leading-relaxed shadow-inner">{c.transcript}</pre>
                 ) : (
-                  <p className="rounded-lg bg-muted/60 p-4 text-sm text-muted-foreground">No transcript was stored for this call.</p>
+                  <p className="rounded-xl border bg-muted/50 p-4 text-sm text-muted-foreground">No transcript was stored for this call.</p>
                 )}
                 <p className="mt-3 text-sm text-muted-foreground">
                   Outcome: <b className="text-foreground">{c.outcome}</b>

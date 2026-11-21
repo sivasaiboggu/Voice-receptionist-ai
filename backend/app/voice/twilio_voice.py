@@ -48,7 +48,13 @@ def send_sms(to, body):
                 "error": "A destination number and a message body are required."}
     if not (TWILIO_SID and TWILIO_TOKEN and TWILIO_NUMBER):
         return {"sent": False, "mode": "demo", "to": to, "body": body}
-    from twilio.rest import Client
+    try:
+        from twilio.rest import Client
+    except ImportError:
+        # Keys configured but the twilio package missing (e.g. a minimal
+        # install): fail as a demo record, not a 500 on /notify/sms.
+        return {"sent": False, "mode": "demo", "to": to, "body": body,
+                "error": "Twilio is not installed on this server — SMS cannot be sent."}
 
     client = Client(TWILIO_SID, TWILIO_TOKEN)
     msg = client.messages.create(body=body, from_=TWILIO_NUMBER, to=to)

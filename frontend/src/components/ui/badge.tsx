@@ -10,5 +10,5 @@ const tones: Record<string, string> = {
   violet: 'bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300',
 }
 export function Badge({ tone = 'default', className, ...p }: HTMLAttributes<HTMLSpanElement> & { tone?: keyof typeof tones }) {
-  return <span className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium', tones[tone], className)} {...p} />
+  return <span className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ring-black/[0.04] dark:ring-white/10', tones[tone], className)} {...p} />
 }

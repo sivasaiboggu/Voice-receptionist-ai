@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Clock3, Copy, Loader2, MessageSquareText, Phone, PhoneOff, Play, Send } from 'lucide-react'
-import { api } from '../lib/api'
+import { BatteryMedium, Check, Clock3, Copy, Loader2, MessageSquareText, Phone, PhoneOff, Play, Send, Signal, Wifi } from 'lucide-react'
+import { api, EndCallResult } from '../lib/api'
 import { useToast } from '../lib/useToast'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -43,13 +43,18 @@ export default function LiveCall() {
   const [scenario, setScenario] = useState(0)
   const [customText, setCustomText] = useState('')
   const [elapsed, setElapsed] = useState(0)
-  const [result, setResult] = useState<any>(null)
+  const [result, setResult] = useState<EndCallResult | null>(null)
   const [smsState, setSmsState] = useState<'idle' | 'sending' | 'done' | 'error'>('idle')
   const [smsNote, setSmsNote] = useState('')
   const [copied, setCopied] = useState(false)
   const { toasts, push, dismiss } = useToast()
   const scrollRef = useRef<HTMLDivElement>(null)
   const stopRef = useRef(false)
+  // finishCall must run exactly once per call: End call and the scripted
+  // loop's own finish can race (both call /call/end), and the second
+  // call returns {ok: false} with no outcome — which used to overwrite
+  // the real summary with an empty badge and "Outcome: undefined".
+  const endedRef = useRef(false)
 
   // Call timer — ticks only while a call is live.
   useEffect(() => {
@@ -93,8 +98,15 @@ export default function LiveCall() {
   }
 
   const finishCall = async () => {
+    if (endedRef.current) return
+    endedRef.current = true
     try {
       const r = await api.endCall(CALLER)
+      if (!r.ok) {
+        // No active session (already ended): don't clobber the summary.
+        push({ title: 'Could not end the call', desc: r.message || 'No active call for this caller.', kind: 'error' })
+        return
+      }
       setStep(STEPS.length - 1)
       setResult(r)
       if (r.escalated) {
@@ -113,6 +125,7 @@ export default function LiveCall() {
   const runScripted = async () => {
     const sc = SCENARIOS[scenario]
     stopRef.current = false
+    endedRef.current = false
     setRunning(true); setResult(null); setMessages([]); setStep(0); setElapsed(0); setSmsState('idle'); setSmsNote('')
     try {
       const start = await api.startCall(CALLER)
@@ -145,6 +158,7 @@ export default function LiveCall() {
 
   const startInteractive = async () => {
     stopRef.current = false
+    endedRef.current = false
     setRunning(true); setResult(null); setMessages([]); setStep(0); setElapsed(0); setSmsState('idle'); setSmsNote('')
     try {
       const start = await api.startCall(CALLER)
@@ -211,7 +225,7 @@ export default function LiveCall() {
           <p className="text-sm text-muted-foreground">Talk to the agent turn by turn — every reply comes from the live backend, and nothing is really dialled or texted.</p>
         </div>
         {running && (
-          <Badge tone="success">
+          <Badge tone="success" className="live-glow shadow-sm">
             <span className="relative mr-1.5 flex h-2 w-2"><span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
             Live · <Clock3 className="ml-1 mr-0.5 h-3 w-3" />{fmtElapsed(elapsed)}
           </Badge>
@@ -238,21 +252,22 @@ export default function LiveCall() {
             <p className="mt-2 text-xs text-muted-foreground">{SCENARIOS[scenario].desc}</p>
           </div>
 
-          {/* Step indicator — driven by the agent's real state each turn. */}
+          {/* Step indicator — driven by the agent's real state each turn;
+              the connector fills as steps complete. */}
           <div className="flex flex-wrap items-center gap-2" aria-label="Call progress">
             {STEPS.map((s, i) => (
               <div key={s} className="flex items-center gap-2">
-                <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-colors ${i < step ? 'bg-emerald-500 text-white' : i === step && running ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
+                <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-all duration-300 ${i < step ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30' : i === step && running ? 'bg-primary text-primary-foreground shadow-md shadow-primary/30 ring-4 ring-primary/15' : 'bg-muted text-muted-foreground'}`}>
                   {i < step ? <Check className="h-4 w-4" /> : i + 1}
                 </div>
                 <span className={`text-xs font-medium ${i <= step ? 'text-foreground' : 'text-muted-foreground'}`}>{s}</span>
-                {i < STEPS.length - 1 && <div className="h-px w-6 bg-border" />}
+                {i < STEPS.length - 1 && <div className={`h-0.5 w-6 rounded-full transition-colors duration-300 ${i < step ? 'bg-emerald-500' : 'bg-border'}`} />}
               </div>
             ))}
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <Button onClick={runScripted} disabled={running} size="lg">
+            <Button onClick={runScripted} disabled={running} size="lg" className="shadow-glow">
               <Play className="h-4 w-4" />{running ? 'Call in progress…' : 'Answer & run scenario'}
             </Button>
             <Button variant="outline" size="lg" disabled={running} onClick={startInteractive}>
@@ -265,13 +280,13 @@ export default function LiveCall() {
           </div>
 
           {/* Live transcript — chat bubbles appear as each turn lands. */}
-          <div ref={scrollRef} className="max-h-[480px] space-y-3 overflow-y-auto rounded-lg border bg-muted/30 p-4" aria-live="polite">
+          <div ref={scrollRef} className="thin-scroll max-h-[480px] space-y-3 overflow-y-auto rounded-2xl border bg-gradient-to-b from-muted/40 to-muted/10 p-4 shadow-inner" aria-live="polite">
             {messages.length === 0 && !typing && (
               <p className="text-sm text-muted-foreground">No call yet. Run a scenario to watch the agent work, or talk to it yourself and type the caller&apos;s lines.</p>
             )}
             {messages.map((m, i) => (
               <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`flex ${m.speaker === 'Caller' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${m.speaker === 'Caller' ? 'rounded-br-sm bg-primary text-primary-foreground' : 'rounded-bl-sm bg-background border'}`}>
+                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.speaker === 'Caller' ? 'rounded-br-sm bg-gradient-to-br from-primary to-primary/85 text-primary-foreground shadow-md shadow-primary/25' : 'rounded-bl-sm border bg-card shadow-soft'}`}>
                   <div className="mb-0.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide opacity-70">
                     {m.speaker === 'Caller' ? 'Caller' : 'Agent'}
                     {m.intent && <span className="rounded-full bg-black/10 px-1.5 py-0.5 normal-case dark:bg-white/10">{m.intent}</span>}
@@ -282,7 +297,7 @@ export default function LiveCall() {
             ))}
             {typing && (
               <div className="flex justify-start">
-                <div className="rounded-2xl rounded-bl-sm border bg-background px-4 py-3 shadow-sm" aria-label="Agent is typing">
+                <div className="rounded-2xl rounded-bl-sm border bg-card px-4 py-3 shadow-soft" aria-label="Agent is typing">
                   <span className="flex gap-1">
                     {[0, 1, 2].map((d) => (
                       <span key={d} className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: `${d * 150}ms` }} />
@@ -330,8 +345,13 @@ export default function LiveCall() {
                   <div>
                     <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">SMS preview — check before sending</div>
                     {/* Phone-style preview of the exact draft text. */}
-                    <div className="mx-auto max-w-sm rounded-[2rem] border bg-background p-3 shadow-sm">
-                      <div className="rounded-[1.6rem] bg-muted/60 p-4">
+                    <div className="mx-auto max-w-sm rounded-[2.5rem] border bg-background p-2.5 shadow-lift ring-1 ring-black/5 dark:ring-white/10">
+                      <div className="rounded-[2rem] bg-muted/60 px-4 pb-4 pt-2">
+                        <div className="mx-auto mb-2.5 h-1.5 w-16 rounded-full bg-foreground/15" aria-hidden />
+                        <div className="mb-2 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+                          <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
+                          <span className="flex items-center gap-1" aria-hidden><Signal className="h-3 w-3" /><Wifi className="h-3 w-3" /><BatteryMedium className="h-3.5 w-3.5" /></span>
+                        </div>
                         <div className="mb-2 flex items-center gap-2 text-xs font-semibold"><Phone className="h-3.5 w-3.5" />Sunrise Dental Clinic</div>
                         <p className="whitespace-pre-wrap text-sm leading-relaxed">{result.follow_up_sms}</p>
                         <p className="mt-2 text-right text-[11px] text-muted-foreground">{result.follow_up_sms.length} characters · {smsSegments(result.follow_up_sms)} SMS segment{smsSegments(result.follow_up_sms) > 1 ? 's' : ''}</p>

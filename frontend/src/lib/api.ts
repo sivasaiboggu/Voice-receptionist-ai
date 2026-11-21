@@ -20,7 +20,7 @@ export type Health = { ok: boolean; service: string; version: string; demo_mode:
 export type Call = { id: number; caller: string; summary: string; sentiment: string; urgency: string; outcome: string; escalated: number; started_at?: string; transcript?: string }
 export type Appt = { id: number; patient_name: string; phone?: string; service: string; slot: string; status: string; created_at?: string }
 export type Stats = { calls_answered: number; appointments_booked: number; escalations: number; unhandled_messages: number; answer_rate: number }
-export type Message = { id: number; caller: string; message: string; created_at?: string; handled: number }
+export type EndCallResult = { ok: boolean; message?: string; caller?: string; outcome?: string; escalated?: boolean; sentiment?: string; urgency?: string; summary?: string; transcript?: string; follow_up_sms?: string | null }
 
 const TIMEOUT_MS = 10_000
 
@@ -78,16 +78,14 @@ export const api = {
   health: () => get<Health>('/health'),
   calls: () => get<Call[]>('/calls'),
   appointments: () => get<Appt[]>('/appointments'),
-  messages: () => get<Message[]>('/messages'),
   slots: () => get<{ available: string[]; timezone: string }>('/slots'),
   analytics: () => get<Stats>('/analytics'),
-  demoCall: (turns?: string[]) => post<any>('/call/demo', turns ? { turns } : {}),
   // Live turn-by-turn session: start greets, each turn returns the agent
   // reply with intent/state, end logs the call and returns its summary.
   startCall: (caller = '+919573719115') => post<{ reply: string }>(`/call/start?caller=${encodeURIComponent(caller)}`),
   callTurn: (caller: string, text: string) =>
     post<{ reply: string; intent: string; state: string }>('/call/turn', { caller, text }),
-  endCall: (caller = '+919573719115') => post<any>(`/call/end?caller=${encodeURIComponent(caller)}`),
+  endCall: (caller = '+919573719115') => post<EndCallResult>(`/call/end?caller=${encodeURIComponent(caller)}`),
   bookAppointment: (patient_name: string, service: string, slot: string, phone = '+919573719115') =>
     post<{ ok: boolean; message: string; follow_up_sms?: string }>('/call/book', { patient_name, service, slot, phone }),
   notifySms: (to: string, body: string) =>

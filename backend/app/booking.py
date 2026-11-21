@@ -63,7 +63,10 @@ SERVICES = {
     "Braces consultation": {"price": 800, "minutes": 30},
 }
 
-OPEN_HOURS = [(9, 13), (14, 20)]  # 9-13, 14-20 (lunch 13-14; KB lunch break is 13:30-14:30)
+OPEN_HOURS = [(9, 13.5), (14.5, 20)]  # 9:00-13:30, 14:30-20:00 — lunch 13:30-14:30
+# matches the knowledge base (docs/kb/hours.md). The old (9, 13), (14, 20)
+# offered 14:00 and 14:30 appointments while the agent told callers the
+# clinic was closed for lunch until 14:30.
 
 _SLOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 # Loose phone check: optional +, digits/spaces/hyphens, 7-15 digits. Demo
@@ -134,8 +137,10 @@ def generate_slots(days=7, start=None):
         day = start + timedelta(days=d)
         hours = [(10, 14)] if day.weekday() == 6 else OPEN_HOURS
         for h0, h1 in hours:
-            t = datetime(day.year, day.month, day.day, h0)
-            end = datetime(day.year, day.month, day.day, h1)
+            # Half-hour boundaries (13:30 lunch start, 14:30 lunch end),
+            # so the window ends are timedeltas, not whole-hour ints.
+            t = datetime(day.year, day.month, day.day) + timedelta(hours=h0)
+            end = datetime(day.year, day.month, day.day) + timedelta(hours=h1)
             while t < end:
                 slots.append(t.strftime("%Y-%m-%d %H:%M"))
                 t += timedelta(minutes=30)

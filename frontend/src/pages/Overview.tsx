@@ -108,7 +108,15 @@ export default function Overview() {
                 <EmptyState icon={PhoneCall} title="No calls yet" desc="Run a demo call from Live call and the outcome chart will appear here." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={outcomeData} margin={{ bottom: 8 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#2563eb" /></BarChart>
+                  <BarChart data={outcomeData} margin={{ bottom: 8 }}>
+                    <defs>
+                      <linearGradient id="outcomeFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#3b82f6" stopOpacity={1} />
+                        <stop offset="100%" stopColor="#2563eb" stopOpacity={0.8} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[8, 8, 0, 0]} fill="url(#outcomeFill)" />
+                  </BarChart>
                 </ResponsiveContainer>
               )}
             </CardContent>
@@ -121,9 +129,15 @@ export default function Overview() {
               {sentimentData.length === 0 ? (
                 <EmptyState icon={PhoneOff} title="No calls yet" desc="Sentiment is measured from each caller's words once calls are logged." />
               ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
-                </ResponsiveContainer>
+                <div className="relative h-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
+                  </ResponsiveContainer>
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pb-8" aria-hidden>
+                    <span className="text-2xl font-bold tracking-tight tabular-nums">{sentimentData.reduce((n, d) => n + d.value, 0)}</span>
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">calls</span>
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>
@@ -138,7 +152,7 @@ export default function Overview() {
           ) : (
             <div className="divide-y">
               {calls.slice(0, 5).map((c) => (
-                <div key={c.id} className="flex flex-wrap items-center gap-2 py-3 text-sm">
+                <div key={c.id} className="-mx-2 flex flex-wrap items-center gap-2 rounded-lg px-2 py-3 text-sm transition-colors hover:bg-accent/50">
                   <span className="font-medium">{c.caller}</span>
                   <span className="min-w-0 flex-1 text-muted-foreground">{c.summary}</span>
                   <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>

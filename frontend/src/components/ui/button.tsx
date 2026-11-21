@@ -2,11 +2,11 @@ import { ButtonHTMLAttributes, forwardRef } from 'react'
 import { cn } from '../../lib/utils'
 
 const variants = {
-  default: 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm',
+  default: 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm shadow-primary/25',
   secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-  outline: 'border bg-background hover:bg-accent hover:text-accent-foreground',
+  outline: 'border bg-background shadow-sm hover:bg-accent hover:text-accent-foreground',
   ghost: 'hover:bg-accent hover:text-accent-foreground',
-  destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+  destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-sm shadow-destructive/25',
 } as const
 
 export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof variants; size?: 'sm' | 'default' | 'lg' }>(

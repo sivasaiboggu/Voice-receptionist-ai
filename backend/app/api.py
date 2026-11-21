@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -109,7 +109,7 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.3.2",
+        "version": "0.3.3",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
         # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".
@@ -219,7 +219,11 @@ def voice_incoming():
 
 
 @app.post("/voice/gather")
-def voice_gather(SpeechResult: str = "", From: str = "+919573719115"):
+def voice_gather(SpeechResult: str = Form(""), From: str = Form("+919573719115")):
+    # Twilio posts urlencoded FORM data, not query params or JSON: the
+    # plain `SpeechResult: str = ""` signature used to read it from the
+    # query string, so every Twilio turn arrived as "" and the agent
+    # answered "Hello" to every caller line. Form(...) reads the real body.
     ag = _get_session(From)
     reply = ag.handle(SpeechResult or "Hello")
     return Response(content=twiml_say(reply), media_type="application/xml")
