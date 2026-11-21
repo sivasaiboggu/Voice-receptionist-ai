@@ -153,7 +153,10 @@ at `localhost`: a visitor's browser can never reach your machine.
 > On Render's free tier the filesystem is ephemeral — data resets on
 > restart/redeploy unless you attach a persistent disk and point
 > `DATABASE_URL` at it (e.g. `sqlite:////var/data/receptionist.db`).
-> Postgres is not supported by the current storage layer.
+> Since v0.3.1, `DATABASE_URL` can also be a Postgres URL
+> (`postgresql://USER:PASSWORD@HOST:5432/receptionist`); the schema is
+> created on first connect and SQLite stays the fallback.
+> `docker-compose.yml` also ships an optional Postgres 16 service (`db`).
 
 ### Local production check
 
@@ -162,6 +165,27 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.1 (Postgres support)
+
+- **Postgres is wired up** — `backend/app/db.py` now honours
+  `DATABASE_URL`: a `postgres://` / `postgresql://` URL connects via
+  `psycopg` (v3, added to `backend/requirements.txt`) and creates the
+  schema on first connect; SQLite stays the default and the fallback
+  when the URL is unset or a `sqlite://` URL. No credentials are
+  hardcoded — the URL comes from the environment only. The same
+  `?`-placeholder calls work on both backends through a small
+  translation wrapper (`INSERT OR IGNORE` becomes `ON CONFLICT DO
+  NOTHING`), so booking, the agent and the API are unchanged.
+  `docker-compose.yml` gains an optional Postgres 16 service (`db`),
+  and the previously missing `frontend/Dockerfile` now exists, so
+  `docker compose up --build` works (both Dockerfiles build-tested).
+- **Tests** — 58 passed, 2 skipped (was 54): new `tests/test_postgres.py`
+  covers the SQL translation, the `_Row` shape (`row[0]`, `row["col"]`,
+  `dict(row)`) and the full booking flow on Postgres (seed, book,
+  double-book rejected, cancel, re-book); the 2 live tests run only when
+  `VOICE_TEST_POSTGRES_URL` is set and pass 6/6 against a local
+  Postgres 16.
 
 ## What changed in v0.3.0 (advanced UX)
 
@@ -240,7 +264,7 @@ curl localhost:8001/health
 | `GEMINI_API_KEY` | Optional. Read by `gemini_polish()` (not yet wired into replies — today's answers come from `docs/kb/` only). |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | Optional. Real calls + SMS. |
 | `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_ID` | Optional, not yet read by any code — see `.env.example`. |
-| `DATABASE_URL` | `sqlite:///./receptionist.db` by default. SQLite only — Postgres is not supported. |
+| `DATABASE_URL` | `sqlite:///./receptionist.db` by default. A `postgres://` / `postgresql://` URL switches storage to Postgres (schema created on first connect). |
 | `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API. Defaults to local Vite dev servers. Set to the Vercel URL in production. |
 | `VITE_API_URL` | Frontend only (set in Vercel). The deployed backend URL. Required in production; dev defaults to `http://localhost:8001`. |
 | `DEMO_MODE` | `true` by default — simulated calls, no keys. Reported by `GET /health`. |
