@@ -13,6 +13,24 @@ import { Skeleton } from '../components/ui/skeleton'
 
 const PIE_COLORS = ['#10b981', '#f59e0b', '#ef4444', '#6366f1']
 
+// Recharts' default tooltip is a fixed white box — jarring in dark mode.
+// This one uses the theme tokens, so it matches light and dark.
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name?: string; value?: number | string }>; label?: string }) {
+  if (!active || !payload || payload.length === 0) return null
+  return (
+    <div className="rounded-lg border bg-card px-3 py-2 text-xs shadow-md">
+      {label !== undefined && label !== '' && <div className="mb-1 font-semibold">{label}</div>}
+      {payload.map((p, i) => (
+        <div key={i} className="text-muted-foreground">
+          {p.name === 'value' ? 'Calls' : p.name}: <span className="font-medium text-foreground">{p.value}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 12 } as const
+
 function greeting() {
   const h = new Date().getHours()
   if (h < 12) return 'Good morning'
@@ -90,7 +108,7 @@ export default function Overview() {
                 <EmptyState icon={PhoneCall} title="No calls yet" desc="Run a demo call from Live call and the outcome chart will appear here." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={outcomeData} margin={{ bottom: 8 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="name" fontSize={12} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} fontSize={12} /><Tooltip formatter={(v) => [v, 'Calls']} /><Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#2563eb" /></BarChart>
+                  <BarChart data={outcomeData} margin={{ bottom: 8 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#2563eb" /></BarChart>
                 </ResponsiveContainer>
               )}
             </CardContent>
@@ -104,7 +122,7 @@ export default function Overview() {
                 <EmptyState icon={PhoneOff} title="No calls yet" desc="Sentiment is measured from each caller's words once calls are logged." />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip formatter={(v) => [v, 'Calls']} /><Legend verticalAlign="bottom" height={24} /></PieChart>
+                  <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
                 </ResponsiveContainer>
               )}
             </CardContent>

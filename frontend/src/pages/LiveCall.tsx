@@ -65,6 +65,11 @@ export default function LiveCall() {
 
   const fmtElapsed = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 
+  // SMS segments at the standard 160 GSM characters — the draft is one
+  // segment for today's demo data, but a long name or service can push
+  // it over, so count it honestly instead of hardcoding "1 segment".
+  const smsSegments = (s: string) => Math.max(1, Math.ceil(s.length / 160))
+
   const fail = (e: unknown) => {
     stopRef.current = true
     push({ title: 'API not reachable', desc: e instanceof Error ? e.message : 'Start the backend: uvicorn backend.app.api:app --port 8001', kind: 'error' })
@@ -207,7 +212,7 @@ export default function LiveCall() {
         </div>
         {running && (
           <Badge tone="success">
-            <span className="mr-1.5 flex h-2 w-2"><span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
+            <span className="relative mr-1.5 flex h-2 w-2"><span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
             Live · <Clock3 className="ml-1 mr-0.5 h-3 w-3" />{fmtElapsed(elapsed)}
           </Badge>
         )}
@@ -329,7 +334,7 @@ export default function LiveCall() {
                       <div className="rounded-[1.6rem] bg-muted/60 p-4">
                         <div className="mb-2 flex items-center gap-2 text-xs font-semibold"><Phone className="h-3.5 w-3.5" />Sunrise Dental Clinic</div>
                         <p className="whitespace-pre-wrap text-sm leading-relaxed">{result.follow_up_sms}</p>
-                        <p className="mt-2 text-right text-[11px] text-muted-foreground">{result.follow_up_sms.length} characters · 1 SMS segment</p>
+                        <p className="mt-2 text-right text-[11px] text-muted-foreground">{result.follow_up_sms.length} characters · {smsSegments(result.follow_up_sms)} SMS segment{smsSegments(result.follow_up_sms) > 1 ? 's' : ''}</p>
                       </div>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center gap-2">

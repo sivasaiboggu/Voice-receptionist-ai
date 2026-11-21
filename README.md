@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 54 tests
+.venv/bin/python -m pytest tests/ -q             # 58 tests (60 with a live Postgres, see below)
 ```
 
 Run the API:
@@ -165,6 +165,29 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.2 (dashboard honesty fixes, patch dependency updates)
+
+- **Live call page** — the pulsing "Live" dot no longer floats to the wrong
+  spot: its wrapper was missing `relative`, so the pinging dot positioned
+  against the page instead of the badge. The SMS preview now counts its
+  segments from the real draft length (`ceil(len / 160)`) instead of
+  hardcoding "1 SMS segment" — today's demo drafts are one segment, but a
+  long patient name or service can push a draft over 160 characters.
+- **Overview charts** — Recharts tooltips, axis labels, grid lines and the
+  pie legend now use the theme tokens, so they read correctly in dark mode
+  instead of showing a fixed white tooltip box and dim grey labels.
+- **Dependencies** — safe patch bumps only: `langgraph` 1.2.23 → 1.2.24,
+  `langchain-core` 1.8.3 → 1.8.4, `autoprefixer` 10.6.2 → 10.7.0. Held
+  back deliberately: React 19, Tailwind 4, Vite 8, framer-motion 14,
+  recharts 3, react-router 7 and TypeScript 7 are all major-version jumps
+  and were not attempted; protobuf 5 → 7 and uuid-utils 0 → 1 are majors
+  too, and the google-generativeai 0.8.6 stack pins protobuf < 6.
+- **Tests** — 58 passed, 2 skipped (the 2 live Postgres tests, skipped
+  without `VOICE_TEST_POSTGRES_URL`); with a local Postgres 16 the full
+  suite is 60 passed, 0 skipped. A new `pytest.ini` pins the
+  asyncio fixture loop scope and silences the pytest-asyncio deprecation
+  warning that printed on every run.
 
 ## What changed in v0.3.1 (Postgres support)
 
