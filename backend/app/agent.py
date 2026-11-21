@@ -285,6 +285,16 @@ class VoiceAgent:
                 return self._offer_alternatives(
                     f"Sorry, {slot} is already booked. Our next available times are: "
                 )
+            if not service and booking.slot_start_blocked(slot):
+                # The row is free but the slot starts inside an
+                # appointment already booked (e.g. 10:30 during a
+                # 10:00-10:45 cleaning) — no service fits, so say so
+                # now instead of promising the time and failing once
+                # the caller names a service.
+                return self._offer_alternatives(
+                    f"Sorry, {slot} falls inside an appointment already booked. "
+                    "Our next available times are: "
+                )
             if service:
                 # The slot is free, but the service may not fit in it
                 # (a 60-minute root canal at 19:30 runs past closing) or

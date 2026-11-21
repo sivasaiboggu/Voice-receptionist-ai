@@ -203,3 +203,85 @@ def test_end_call_uses_whole_call_signals():
     assert result["sentiment"] == "negative"
     assert result["urgency"] == "high"
     assert result["escalated"] is True
+
+
+# --- Round 8: the overlap race is closed by the booking lock ---
+
+def test_concurrent_overlapping_bookings_only_one_wins():
+    """Round 7's residual race: two simultaneous requests for
+    overlapping-but-different slots (10:00 cleaning, 10:30 checkup)
+    could both pass the overlap check before either claimed. The
+    booking lock serialises check+claim, so exactly one wins — on
+    SQLite via BEGIN IMMEDIATE, which makes the second writer wait
+    and then re-read the intervals."""
+    import threading
+
+    day = _next_weekday()
+    barrier = threading.Barrier(4)
+    results = []
+
+    def attempt(name, phone, service, time):
+        barrier.wait(timeout=10)
+        results.append(
+            booking.book(name, phone, service, _slot(day, time))
+        )
+
+    threads = [
+        threading.Thread(target=attempt, args=("Asha", "+91 90000 00021", "Teeth cleaning", "10:00")),
+        threading.Thread(target=attempt, args=("Ravi", "+91 90000 00022", "General checkup", "10:30")),
+        threading.Thread(target=attempt, args=("Meera", "+91 90000 00023", "Teeth cleaning", "10:00")),
+        threading.Thread(target=attempt, args=("Kiran", "+91 90000 00024", "Root canal treatment", "10:30")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=35)
+    assert all(not t.is_alive() for t in threads), "a booking thread hung on the lock"
+    assert len(results) == 4
+    assert sum(1 for ok, _ in results if ok) == 1
+    booked = [a for a in booking.list_appointments() if a["status"] == "booked"]
+    assert len(booked) == 1
+    # The losers were told why, not given a bare failure.
+    assert all("overlap" in msg.lower() or "already booked" in msg.lower() for ok, msg in results if not ok)
+
+
+def test_concurrent_same_slot_still_only_one_wins():
+    import threading
+
+    day = _next_weekday()
+    barrier = threading.Barrier(4)
+    results = []
+
+    def attempt(i):
+        barrier.wait(timeout=10)
+        results.append(booking.book(f"P{i}", f"+91 90000 0003{i}", "General checkup", _slot(day, "11:00")))
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=35)
+    assert sum(1 for ok, _ in results if ok) == 1
+
+
+def test_slot_start_blocked():
+    day = _next_weekday()
+    assert booking.slot_start_blocked(_slot(day, "10:30")) is False
+    booking.book("Asha", "+91 90000 00001", "Teeth cleaning", _slot(day, "10:00"))
+    assert booking.slot_start_blocked(_slot(day, "10:30")) is True
+    assert booking.slot_start_blocked(_slot(day, "11:00")) is False
+    assert booking.slot_start_blocked("not a slot") is False
+
+
+def test_agent_does_not_promise_slot_inside_booking():
+    day = _next_weekday()
+    booking.book("Asha", "+91 90000 00001", "Teeth cleaning", _slot(day, "10:00"))
+    ag = va.VoiceAgent(caller="+91 90000 00016")
+    ag.greet()
+    # 10:30 looks free by its slot row, but it starts inside the
+    # 10:00-10:45 cleaning: the agent must offer alternatives, never
+    # "10:30 is available".
+    reply = ag.handle(f"Book {_slot(day, '10:30')}")
+    assert "is available" not in reply
+    assert "next available times are:" in reply
+    assert ag.pending_slot is None

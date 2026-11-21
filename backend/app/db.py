@@ -284,3 +284,33 @@ def db():
         conn.commit()
     finally:
         conn.close()
+
+
+# Advisory-lock key for booking mutations (Postgres) — any fixed integer.
+BOOKING_LOCK_KEY = 20261121
+
+
+def acquire_booking_lock(conn):
+    """Serialise booking mutations for the current transaction.
+
+    Booking is check-then-claim: the overlap check reads booked
+    intervals and the claim flips a slot row. Two requests for
+    overlapping-but-different slots could both pass the check before
+    either claimed, and the atomic slot claim only protects the *same*
+    slot — so the overlap window was a real double-booking race. The
+    lock closes it on both backends, and is released when the
+    transaction commits (``db()``) or rolls back:
+    - SQLite: ``BEGIN IMMEDIATE`` takes the database write lock up
+      front. A deferred transaction would only lock at the first
+      write, i.e. after the check — too late.
+    - Postgres: a transaction-scoped advisory lock; every booking
+      mutation takes the same key, so they serialise.
+    A Postgres EXCLUDE constraint was considered and rejected: SQLite
+    (the default backend) has no exclusion constraints, and a
+    Postgres-only constraint would leave the default path racy while
+    needing range columns the schema does not have.
+    """
+    if getattr(conn, "is_postgres", False):
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (BOOKING_LOCK_KEY,))
+    elif not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")

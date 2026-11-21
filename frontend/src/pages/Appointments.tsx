@@ -23,6 +23,10 @@ export default function Appointments() {
   // List vs calendar view; calendar groups bookings by clinic-local day.
   const [view, setView] = useState<'list' | 'calendar'>('list')
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
+  // List-view status filter — cancelled appointments used to sit mixed
+  // in with booked ones and there was no way to separate them.
+  const [statusFilter, setStatusFilter] = useState<'all' | 'booked' | 'cancelled'>('all')
+  const visibleAppts = statusFilter === 'all' ? appts : appts.filter((a) => a.status === statusFilter)
   // Clinic timezone from /health — every slot time on this page is in it.
   const [clinicTz, setClinicTz] = useState('')
 
@@ -131,13 +135,25 @@ export default function Appointments() {
       <Toasts toasts={toasts} onDismiss={dismiss} />
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again. Demo data — bookings made by simulated demo calls.{tzNote}</p></div>
-        <div className="flex gap-1 rounded-md border p-1" role="group" aria-label="Appointments view">
-          <Button variant={view === 'list' ? 'default' : 'ghost'} size="sm" onClick={() => setView('list')} aria-pressed={view === 'list'}><List className="h-4 w-4" />List</Button>
-          <Button variant={view === 'calendar' ? 'default' : 'ghost'} size="sm" onClick={() => setView('calendar')} aria-pressed={view === 'calendar'}><CalendarDays className="h-4 w-4" />Calendar</Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {view === 'list' && (
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'booked' | 'cancelled')} aria-label="Filter by status" className="h-9 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <option value="all">All statuses</option>
+              <option value="booked">Booked</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          )}
+          <div className="flex gap-1 rounded-md border p-1" role="group" aria-label="Appointments view">
+            <Button variant={view === 'list' ? 'default' : 'ghost'} size="sm" onClick={() => setView('list')} aria-pressed={view === 'list'}><List className="h-4 w-4" />List</Button>
+            <Button variant={view === 'calendar' ? 'default' : 'ghost'} size="sm" onClick={() => setView('calendar')} aria-pressed={view === 'calendar'}><CalendarDays className="h-4 w-4" />Calendar</Button>
+          </div>
         </div>
       </div>
       {appts.length === 0 && (
         <EmptyState icon={CalendarCheck2} title="No appointments yet" desc="Appointments booked by the agent show up here with the service, time and caller." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
+      )}
+      {view === 'list' && visibleAppts.length === 0 && appts.length > 0 && (
+        <EmptyState icon={CalendarCheck2} title={`No ${statusFilter} appointments`} desc="Try the other status filter — the appointments are still there." action={<Button size="sm" variant="outline" onClick={() => setStatusFilter('all')}>Show all</Button>} />
       )}
       {view === 'calendar' && appts.length > 0 && (
         <>
@@ -214,7 +230,7 @@ export default function Appointments() {
       )}
       {view === 'list' && (
       <div className="grid gap-4 sm:grid-cols-2">
-        {appts.map((a, i) => (
+        {visibleAppts.map((a, i) => (
           <motion.div key={a.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
             <Card className="hover:-translate-y-0.5 hover:shadow-lift">
               <CardHeader>

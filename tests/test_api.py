@@ -233,6 +233,30 @@ def test_call_start_with_no_caller_turn_logs_nothing(client):
     client.post("/call/end", params={"caller": caller})
 
 
+def test_session_eviction_logs_abandoned_call(client, monkeypatch):
+    """Round 8: when the session table is full, evicting the oldest
+    session used to drop it without logging — its transcript was lost
+    even though /call/start already logged abandoned same-number
+    sessions. The evicted call must now be in the log."""
+    import backend.app.api as api_mod
+
+    api_mod._sessions.clear()
+    monkeypatch.setattr(api_mod, "_MAX_SESSIONS", 2)
+    try:
+        victim = "+915666666666"
+        client.post("/call/start", params={"caller": victim})
+        client.post("/call/turn", json={"caller": victim, "text": "What are your opening hours?"})
+        client.post("/call/start", params={"caller": "+915666666667"})
+        client.post("/call/start", params={"caller": "+915666666668"})
+        calls = [c for c in client.get("/calls").json() if c["caller"] == victim]
+        assert len(calls) == 1
+        assert "opening hours" in calls[0]["transcript"].lower()
+    finally:
+        api_mod._sessions.clear()
+        client.post("/call/end", params={"caller": "+915666666667"})
+        client.post("/call/end", params={"caller": "+915666666668"})
+
+
 def test_notify_sms_twilio_api_error_is_demo_record_not_500(client, monkeypatch):
     """Twilio keys set but the API call itself fails (bad number, bad
     credentials, outage): /notify/sms used to raise a 500. It must

@@ -56,12 +56,24 @@ _sessions = {}
 _MAX_SESSIONS = 100
 
 
+def _end_abandoned(ag):
+    """Log an abandoned session's call, if the caller said anything.
+
+    Sessions are dropped in two places — a new call from the same
+    number, and eviction when the session table is full — and both
+    used to silently lose the transcript. A greeting-only session
+    logs nothing.
+    """
+    if ag is not None and any(line.startswith("Caller:") for line in ag.transcript):
+        ag.end_call()
+
+
 def _get_session(caller):
     ag = _sessions.get(caller)
     if ag is None:
         ag = voice_agent.VoiceAgent(caller=caller)
         if len(_sessions) >= _MAX_SESSIONS:
-            _sessions.pop(next(iter(_sessions)))  # evict the oldest session
+            _end_abandoned(_sessions.pop(next(iter(_sessions))))  # evict the oldest session
         _sessions[caller] = ag
     return ag
 
@@ -109,7 +121,7 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.3.4",
+        "version": "0.3.5",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
         # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".
@@ -124,11 +136,10 @@ def call_start(caller: str = "+919573719115"):
     # End it first (only when the caller actually said something) so the
     # abandoned call is still in the log.
     prev = _sessions.pop(caller, None)
-    if prev is not None and any(line.startswith("Caller:") for line in prev.transcript):
-        prev.end_call()
+    _end_abandoned(prev)
     ag = voice_agent.VoiceAgent(caller=caller)
     if len(_sessions) >= _MAX_SESSIONS:
-        _sessions.pop(next(iter(_sessions)))
+        _end_abandoned(_sessions.pop(next(iter(_sessions))))
     _sessions[caller] = ag
     return {"reply": ag.greet()}
 

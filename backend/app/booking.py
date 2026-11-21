@@ -1,10 +1,12 @@
 """Appointment booking: slot generation, double-booking prevention, confirmations.
 
 Safety guarantees:
-- Booking is atomic: a single conditional UPDATE claims the slot, so two
-  concurrent requests can never book the same slot (the old SELECT-then-
-  UPDATE had a race). The appointments.slot UNIQUE constraint is a second
-  line of defence and IntegrityError is handled, not raised.
+- Booking is atomic: the overlap check and the slot claim run under
+  the booking lock (``acquire_booking_lock`` — BEGIN IMMEDIATE on
+  SQLite, a transaction advisory lock on Postgres), so two concurrent
+  requests can never book the same slot *or* overlapping slots. The
+  appointments.slot UNIQUE constraint is a second line of defence
+  and IntegrityError is handled, not raised.
 - Past slots are never offered or bookable.
 - Patient name, phone, service and slot format are validated before any write.
 - Service names are matched case-insensitively ("teeth cleaning" works).
@@ -28,7 +30,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .db import db, init_db
+from .db import acquire_booking_lock, db, init_db
 
 def _resolve_clinic_tz():
     """Clinic timezone from CLINIC_TZ (IANA name, default Asia/Kolkata).
@@ -307,6 +309,25 @@ def slot_conflict(slot, service):
     return None
 
 
+def slot_start_blocked(slot):
+    """True when `slot` starts inside an already-booked appointment.
+
+    The slot row itself is still marked available — only a booking's
+    starting slot is ever flipped — so a 10:30 request during a
+    10:00-10:45 cleaning looks free to a row check. The agent used to
+    promise it ("10:30 is available") and only fail later, once the
+    caller named a service. Every service is at least 30 minutes, so
+    a covered start fits nothing.
+    """
+    slot_dt = parse_slot(slot)
+    if slot_dt is None:
+        return False
+    with db() as conn:
+        return any(
+            start <= slot_dt < finish for start, finish in _booked_intervals(conn)
+        )
+
+
 def book(patient_name, phone, service, slot):
     """Book a slot. Returns (ok, message). Double-booking is rejected atomically."""
     canonical, slot_dt, error = validate_booking(patient_name, phone, service, slot)
@@ -317,17 +338,18 @@ def book(patient_name, phone, service, slot):
     phone = str(phone).strip()
     minutes = SERVICES[canonical]["minutes"]
     with db() as conn:
+        # Serialise the overlap check + claim: without this, two
+        # requests for overlapping-but-different slots arriving in the
+        # same instant could both pass the check below (see
+        # acquire_booking_lock). The atomic claim that follows only
+        # protects the same slot, not the overlap.
+        acquire_booking_lock(conn)
         row = conn.execute("SELECT available FROM slots WHERE slot=?", (slot,)).fetchone()
         if row is None:
             return False, f"That time ({slot}) is outside our hours — pick a slot from the available list."
         # A longer service occupies the slot after its start too: refuse
         # before claiming, so a 10:30 booking can never land inside a
-        # 10:00 cleaning that runs to 10:45. (Residual race note: two
-        # requests for overlapping-but-different slots arriving in the
-        # same instant could both pass this read; the atomic claim below
-        # still guarantees no single slot is ever double-booked, and the
-        # overlap window is the single read-then-claim gap, not a
-        # SELECT-then-UPDATE on the same slot.)
+        # 10:00 cleaning that runs to 10:45.
         if not _slot_free(slot_dt, minutes, _booked_intervals(conn)):
             return False, (
                 f"Sorry, {slot} overlaps with an appointment already booked — "
@@ -380,6 +402,10 @@ def cancel(slot, patient_name=None):
         return False, f"That time ({slot}) isn't a valid slot — please give the date and time of the appointment, e.g. YYYY-MM-DD HH:MM."
     slot = slot.strip()
     with db() as conn:
+        # Same lock as book(): a cancel racing a booking on the same
+        # slot could otherwise cancel the appointment that was just
+        # made (its UPDATE matches any booked row on the slot).
+        acquire_booking_lock(conn)
         if patient_name:
             cur = conn.execute(
                 "UPDATE appointments SET status='cancelled' "

@@ -100,3 +100,42 @@ def test_postgres_api_row_shapes(pg_env):
         rows = conn.execute("SELECT * FROM calls ORDER BY id DESC LIMIT 50").fetchall()
         assert dict(rows[0])["caller"] == "+911234567890"
         assert rows[0][0] is not None  # index access still works
+
+
+def test_postgres_concurrent_overlapping_bookings_only_one_wins(pg_env):
+    """Round 8: the overlap race on Postgres, where the lock is a
+    transaction advisory lock (pg_advisory_xact_lock) instead of
+    SQLite's BEGIN IMMEDIATE. Two simultaneous requests for
+    overlapping-but-different slots must leave exactly one booking."""
+    import threading
+    from datetime import timedelta
+
+    from backend.app import booking
+
+    booking.seed_slots()
+    day = booking.now_clinic().date() + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    slot_1000 = f"{day.isoformat()} 10:00"
+    slot_1030 = f"{day.isoformat()} 10:30"
+    assert slot_1000 in booking.available_slots(limit=100)
+    barrier = threading.Barrier(2)
+    results = []
+
+    def attempt(name, phone, service, slot):
+        barrier.wait(timeout=10)
+        results.append(booking.book(name, phone, service, slot))
+
+    threads = [
+        threading.Thread(target=attempt, args=("Asha", "+91 90000 00041", "Teeth cleaning", slot_1000)),
+        threading.Thread(target=attempt, args=("Ravi", "+91 90000 00042", "General checkup", slot_1030)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=35)
+    assert all(not t.is_alive() for t in threads), "a booking thread hung on the advisory lock"
+    assert len(results) == 2
+    assert sum(1 for ok, _ in results if ok) == 1
+    booked = [a for a in booking.list_appointments() if a["status"] == "booked"]
+    assert len(booked) == 1
