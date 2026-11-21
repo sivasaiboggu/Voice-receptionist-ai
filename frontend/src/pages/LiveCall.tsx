@@ -143,7 +143,7 @@ export default function LiveCall() {
       // Mirror the demo flow: a non-escalated scripted call books the first
       // free slot for the scenario's service before the call is logged.
       if (!escalated && sc.service) {
-        const slots = await api.slots()
+        const slots = await api.slots(sc.service)
         if (slots.available.length > 0) {
           const b = await api.bookAppointment('Demo Patient', sc.service, slots.available[0])
           setMessages((m) => [...m, { speaker: 'Agent', text: b.message }])

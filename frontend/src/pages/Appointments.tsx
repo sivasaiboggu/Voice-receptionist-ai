@@ -67,6 +67,22 @@ export default function Appointments() {
   const selectedAppts = selectedDay ? byDay(selectedDay) : []
   const tzNote = clinicTz ? ` All times are clinic time (${tzAbbreviation(clinicTz)}, ${clinicTz}).` : ''
 
+  // Human day label for a clinic-local slot date: "Today", "Tomorrow",
+  // a weekday, or a short date — a bare "2026-11-24" makes the reader
+  // do calendar maths. Judged against clinic today, not the browser's.
+  const dayLabel = (slot: string) => {
+    const key = slot.slice(0, 10)
+    if (!clinicTodayKey) return key
+    const today = new Date(`${clinicTodayKey}T12:00:00`)
+    const d = new Date(`${key}T12:00:00`)
+    const diff = Math.round((d.getTime() - today.getTime()) / 86400000)
+    if (diff === 0) return 'Today'
+    if (diff === 1) return 'Tomorrow'
+    if (diff === -1) return 'Yesterday'
+    if (diff > 1 && diff < 7) return d.toLocaleDateString('en-IN', { weekday: 'long' })
+    return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
+  }
+
   const load = () => {
     setLoading(true); setError('')
     api.health().then((h) => setClinicTz(h.timezone || '')).catch(() => {})
@@ -173,7 +189,7 @@ export default function Appointments() {
                   <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-3 shadow-soft transition-colors hover:bg-accent/40">
                     <div>
                       <p className="text-sm font-medium">{a.patient_name} · {a.service}</p>
-                      <p className="text-xs text-muted-foreground">{a.slot}{a.phone ? ` · ${a.phone}` : ''}</p>
+                      <p className="text-xs text-muted-foreground">{dayLabel(a.slot)} {a.slot.slice(11)}{a.phone ? ` · ${a.phone}` : ''}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge tone={a.status === 'booked' ? 'success' : 'danger'}>{a.status}</Badge>
@@ -201,13 +217,17 @@ export default function Appointments() {
         {appts.map((a, i) => (
           <motion.div key={a.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
             <Card className="hover:-translate-y-0.5 hover:shadow-lift">
-              <CardHeader className="flex-row flex-wrap items-center gap-3 space-y-0">
-                <CalendarCheck2 className="h-5 w-5 shrink-0 text-primary" />
-                <CardTitle className="min-w-0 flex-1 text-base">{a.patient_name}</CardTitle>
-                <Badge tone={a.status === 'booked' ? 'success' : a.status === 'cancelled' ? 'danger' : 'default'}>{a.status}</Badge>
+              <CardHeader>
+                {/* See Overview: the row flex must be an inner div, not on
+                    the CardHeader — its base `flex-col` beats `flex-row`. */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <CalendarCheck2 className="h-5 w-5 shrink-0 text-primary" />
+                  <CardTitle className="min-w-0 flex-1 text-base">{a.patient_name}</CardTitle>
+                  <Badge tone={a.status === 'booked' ? 'success' : a.status === 'cancelled' ? 'danger' : 'default'}>{a.status}</Badge>
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">{a.service} · {a.slot}{a.phone ? ` · ${a.phone}` : ''}</p>
+                <p className="text-sm text-muted-foreground">{a.service} · {dayLabel(a.slot)} {a.slot.slice(11)}{a.phone ? ` · ${a.phone}` : ''}</p>
                 {a.status === 'booked' && (
                   confirming === a.id ? (
                     <div className="flex flex-wrap items-center gap-2">

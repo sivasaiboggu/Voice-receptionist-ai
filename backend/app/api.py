@@ -109,7 +109,7 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.3.3",
+        "version": "0.3.4",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
         # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".
@@ -119,6 +119,13 @@ def health():
 
 @app.post("/call/start")
 def call_start(caller: str = "+919573719115"):
+    # Starting a new call for the same number used to silently drop the
+    # previous session — its transcript and outcome were never logged.
+    # End it first (only when the caller actually said something) so the
+    # abandoned call is still in the log.
+    prev = _sessions.pop(caller, None)
+    if prev is not None and any(line.startswith("Caller:") for line in prev.transcript):
+        prev.end_call()
     ag = voice_agent.VoiceAgent(caller=caller)
     if len(_sessions) >= _MAX_SESSIONS:
         _sessions.pop(next(iter(_sessions)))
@@ -175,10 +182,13 @@ def appointments():
 
 
 @app.get("/slots")
-def slots(limit: int = Query(default=20, ge=1, le=100)):
+def slots(service: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100)):
     # `timezone` names the zone the slot strings are in, so a dashboard
     # in another timezone can label them instead of guessing.
-    return {"available": booking.available_slots(limit=limit), "timezone": booking.clinic_tz_name()}
+    # `service` (optional) filters to slots the whole service fits in —
+    # the first free slot overall can be 19:30, which a 45-minute
+    # cleaning would run past closing.
+    return {"available": booking.available_slots(service=service, limit=limit), "timezone": booking.clinic_tz_name()}
 
 
 @app.get("/calls")

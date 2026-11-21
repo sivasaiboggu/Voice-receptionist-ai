@@ -14,6 +14,13 @@ Safety guarantees:
   UTC used to offer slots that had already passed in India, and to
   skip the first clinic day when it was already tomorrow in IST.
   created_at stamps are UTC so they are unambiguous anywhere.
+- Service durations are real: a 45-minute cleaning occupies the slot
+  it starts in AND the next half-hour slot, and a 60-minute root canal
+  occupies two. Offering or booking the overlapping slot used to
+  double-book the dentist's time, because only the starting slot was
+  marked unavailable. A booking is also refused when the service would
+  run past lunch or closing time (a 13:00 root canal ends at 14:00,
+  inside the 13:30-14:30 lunch break).
 """
 import os
 import re
@@ -96,6 +103,43 @@ def parse_slot(slot):
         return None
 
 
+def _day_windows(day):
+    """Open windows for one clinic-local date as (start, end) aware
+    datetimes. Sunday is 10:00-14:00; every other day is 9:00-13:30
+    and 14:30-20:00 (lunch 13:30-14:30)."""
+    hours = [(10, 14)] if day.weekday() == 6 else OPEN_HOURS
+    base = datetime(day.year, day.month, day.day, tzinfo=CLINIC_TZ)
+    return [
+        (base + timedelta(hours=h0), base + timedelta(hours=h1))
+        for h0, h1 in hours
+    ]
+
+
+def _window_containing(slot_dt):
+    """The open window a slot starts in, or None when the slot starts
+    outside opening hours (e.g. during lunch)."""
+    for start, end in _day_windows(slot_dt.date()):
+        if start <= slot_dt < end:
+            return start, end
+    return None
+
+
+def _overrun_reason(slot_dt, minutes):
+    """Why a service starting at `slot_dt` does not fit, or None.
+
+    A service must finish inside the window it starts in — it may not
+    run into lunch or past closing time."""
+    window = _window_containing(slot_dt)
+    if window is None:
+        return "outside our opening hours"
+    _, end = window
+    if slot_dt + timedelta(minutes=minutes) > end:
+        if end.hour == 13 and end.minute == 30:
+            return "it would run into our lunch break (1:30–2:30 PM)"
+        return f"it would run past closing time ({end.strftime('%I:%M %p').lstrip('0')})"
+    return None
+
+
 def validate_booking(patient_name, phone, service, slot):
     """Validate a booking request. Returns (canonical_service, slot_dt, error).
 
@@ -118,7 +162,41 @@ def validate_booking(patient_name, phone, service, slot):
         return None, None, f"That time ({slot}) is in the past — please pick a future slot."
     if slot_dt.minute not in (0, 30) or slot_dt.second:
         return None, None, f"Appointments start on the hour or half hour — {slot} isn't a valid slot."
+    reason = _overrun_reason(slot_dt, SERVICES[canonical]["minutes"])
+    if reason is not None and reason != "outside our opening hours":
+        return None, None, (
+            f"{canonical} takes {SERVICES[canonical]['minutes']} minutes, so {slot} doesn't work — "
+            f"{reason}. Please pick an earlier time."
+        )
+    # A slot outside opening hours (e.g. 21:00, or 13:30 during lunch)
+    # passes validation here: book() rejects it via the slot-row lookup
+    # ("outside our hours"), which is also where the caller gets the
+    # available list. Validation only judges the request itself.
     return canonical, slot_dt, None
+
+
+def _booked_intervals(conn):
+    """(start, end) of every booked appointment, from its service length.
+
+    A cancelled appointment holds no time; an unknown service is treated
+    as 30 minutes rather than crashing the lookup."""
+    rows = conn.execute(
+        "SELECT slot, service FROM appointments WHERE status='booked'"
+    ).fetchall()
+    intervals = []
+    for r in rows:
+        start = parse_slot(r["slot"])
+        if start is None:
+            continue
+        minutes = SERVICES.get(r["service"], {}).get("minutes", 30)
+        intervals.append((start, start + timedelta(minutes=minutes)))
+    return intervals
+
+
+def _slot_free(slot_dt, minutes, intervals):
+    """True when [slot_dt, slot_dt + minutes) overlaps no booked interval."""
+    end = slot_dt + timedelta(minutes=minutes)
+    return not any(start < end and finish > slot_dt for start, finish in intervals)
 
 
 def generate_slots(days=7, start=None):
@@ -135,13 +213,9 @@ def generate_slots(days=7, start=None):
     slots = []
     for d in range(days):
         day = start + timedelta(days=d)
-        hours = [(10, 14)] if day.weekday() == 6 else OPEN_HOURS
-        for h0, h1 in hours:
-            # Half-hour boundaries (13:30 lunch start, 14:30 lunch end),
-            # so the window ends are timedeltas, not whole-hour ints.
-            t = datetime(day.year, day.month, day.day) + timedelta(hours=h0)
-            end = datetime(day.year, day.month, day.day) + timedelta(hours=h1)
-            while t < end:
+        for window_start, window_end in _day_windows(day):
+            t = window_start
+            while t < window_end:
                 slots.append(t.strftime("%Y-%m-%d %H:%M"))
                 t += timedelta(minutes=30)
     return slots
@@ -155,36 +229,110 @@ def seed_slots():
 
 
 def available_slots(service=None, limit=20):
-    """Future, still-free slots only, earliest first. `limit` is clamped."""
+    """Future, still-free slots only, earliest first. `limit` is clamped.
+
+    `service` finally means something: it used to be accepted and
+    ignored. A slot is only offered when the whole service fits in it —
+    a 45-minute cleaning starting at 13:00 would run into lunch, and a
+    slot starting inside an already-booked appointment (e.g. 10:30 when
+    a 10:00 cleaning runs to 10:45) is not free for any service. More
+    rows are fetched than `limit` so filtering never shortens the list
+    below what the caller asked for while enough slots exist.
+    """
     try:
         limit = int(limit)
     except (TypeError, ValueError):
         limit = 20
     limit = max(1, min(limit, 100))
+    minutes = None
+    if service is not None:
+        canonical = normalise_service(service)
+        if canonical is None:
+            return []
+        minutes = SERVICES[canonical]["minutes"]
     # Compare against the clinic clock: a slot that already passed in
     # clinic time must not be offered even if it is still "future" on
     # a server running in another timezone (e.g. UTC).
     now = now_clinic().strftime("%Y-%m-%d %H:%M")
     with db() as conn:
         rows = conn.execute(
-            "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT ?",
-            (now, limit),
+            "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT 200",
+            (now,),
         ).fetchall()
-    return [r["slot"] for r in rows]
+        intervals = _booked_intervals(conn)
+    free = []
+    for r in rows:
+        slot_dt = parse_slot(r["slot"])
+        if slot_dt is None:
+            continue
+        if minutes is None:
+            # No service named: the slot just has to start outside every
+            # booked appointment.
+            if any(start <= slot_dt < finish for start, finish in intervals):
+                continue
+        else:
+            if not _slot_free(slot_dt, minutes, intervals):
+                continue
+            if _overrun_reason(slot_dt, minutes) is not None:
+                continue
+        free.append(r["slot"])
+        if len(free) >= limit:
+            break
+    return free
+
+
+def slot_conflict(slot, service):
+    """Why `slot` cannot be booked for `service`, or None when it can.
+
+    Checks the slot row (exists, still free) and whether the service's
+    full length overlaps an already-booked appointment. Pure validation
+    (format, past, lunch/closing overrun) lives in validate_booking and
+    is not repeated here — callers that need both run both.
+    """
+    slot_dt = parse_slot(slot)
+    if slot_dt is None:
+        return None
+    minutes = SERVICES[service]["minutes"]
+    with db() as conn:
+        row = conn.execute("SELECT available FROM slots WHERE slot=?", (slot.strip(),)).fetchone()
+        if row is None:
+            return f"That time ({slot.strip()}) is outside our opening hours — pick a slot from the available list."
+        if row["available"] == 0:
+            return f"Sorry, {slot.strip()} is already booked. Please pick another time."
+        if not _slot_free(slot_dt, minutes, _booked_intervals(conn)):
+            return (
+                f"Sorry, {slot.strip()} overlaps with an appointment already booked — "
+                f"a {service} takes {minutes} minutes. Please pick another time."
+            )
+    return None
 
 
 def book(patient_name, phone, service, slot):
     """Book a slot. Returns (ok, message). Double-booking is rejected atomically."""
-    canonical, _slot_dt, error = validate_booking(patient_name, phone, service, slot)
+    canonical, slot_dt, error = validate_booking(patient_name, phone, service, slot)
     if error:
         return False, error
     slot = slot.strip()
     patient_name = str(patient_name).strip()
     phone = str(phone).strip()
+    minutes = SERVICES[canonical]["minutes"]
     with db() as conn:
         row = conn.execute("SELECT available FROM slots WHERE slot=?", (slot,)).fetchone()
         if row is None:
             return False, f"That time ({slot}) is outside our hours — pick a slot from the available list."
+        # A longer service occupies the slot after its start too: refuse
+        # before claiming, so a 10:30 booking can never land inside a
+        # 10:00 cleaning that runs to 10:45. (Residual race note: two
+        # requests for overlapping-but-different slots arriving in the
+        # same instant could both pass this read; the atomic claim below
+        # still guarantees no single slot is ever double-booked, and the
+        # overlap window is the single read-then-claim gap, not a
+        # SELECT-then-UPDATE on the same slot.)
+        if not _slot_free(slot_dt, minutes, _booked_intervals(conn)):
+            return False, (
+                f"Sorry, {slot} overlaps with an appointment already booked — "
+                f"a {canonical} takes {minutes} minutes. Please pick another time."
+            )
         # Atomic claim: only one writer can flip available 1 -> 0.
         cur = conn.execute(
             "UPDATE slots SET available=0 WHERE slot=? AND available=1", (slot,)

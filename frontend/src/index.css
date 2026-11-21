@@ -62,6 +62,13 @@
   .thin-scroll::-webkit-scrollbar-track { background: transparent; }
   /* Soft breathing glow for the live-call badge. */
   .live-glow { animation: live-glow 2.4s ease-in-out infinite; }
+  /* Brand gradient text — primary into indigo, readable in both themes. */
+  .text-gradient {
+    background: linear-gradient(92deg, hsl(var(--primary)), #6366f1 70%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 @keyframes live-glow {

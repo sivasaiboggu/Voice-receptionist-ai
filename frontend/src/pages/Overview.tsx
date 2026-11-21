@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { AlertTriangle, CalendarCheck2, PhoneCall, PhoneIncoming, PhoneOff, RefreshCw } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { api, Call, Stats } from '../lib/api'
+import { api, Appt, Call, Stats } from '../lib/api'
+import { tzAbbreviation } from '../lib/utils'
 import StatCard from '../components/StatCard'
 import EmptyState from '../components/EmptyState'
 import { Badge } from '../components/ui/badge'
@@ -42,17 +43,35 @@ export default function Overview() {
   const navigate = useNavigate()
   const [calls, setCalls] = useState<Call[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
+  const [appts, setAppts] = useState<Appt[]>([])
+  const [clinicTz, setClinicTz] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const load = () => {
     setLoading(true); setError('')
-    Promise.all([api.calls(), api.analytics()])
-      .then(([c, s]) => { setCalls(c); setStats(s) })
+    Promise.all([api.calls(), api.analytics(), api.appointments(), api.health()])
+      .then(([c, s, a, h]) => { setCalls(c); setStats(s); setAppts(a); setClinicTz(h.timezone || '') })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
   }
   useEffect(load, [])
+
+  // Today in the CLINIC timezone — the appointments below are the
+  // clinic's today, not the viewer's.
+  const clinicTodayKey = useMemo(() => {
+    if (!clinicTz) return null
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: clinicTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+    } catch { return null }
+  }, [clinicTz])
+
+  const todaysAppts = useMemo(() => {
+    if (!clinicTodayKey) return []
+    return appts
+      .filter((a) => a.status === 'booked' && a.slot.slice(0, 10) === clinicTodayKey)
+      .sort((a, b) => a.slot.localeCompare(b.slot))
+  }, [appts, clinicTodayKey])
 
   const outcomeData = useMemo(() => {
     const m = new Map<string, number>()
@@ -87,7 +106,7 @@ export default function Overview() {
   return (
     <div className="space-y-6">
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-2xl font-bold tracking-tight">{greeting()}, Sunrise Dental</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{greeting()}, <span className="text-gradient">Sunrise Dental</span></h1>
         <p className="mt-1 text-sm text-muted-foreground">Your receptionist answered {stats?.calls_answered ?? 0} calls and booked {stats?.appointments_booked ?? 0} appointments.</p>
         <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge tone="warning">Demo data</Badge>These counts come from simulated demo calls stored by the backend — no real patient data.</p>
       </motion.div>
@@ -98,6 +117,39 @@ export default function Overview() {
         <StatCard label="Escalations" value={stats?.escalations ?? 0} sub="Handed to a human" icon={AlertTriangle} delay={0.1} tone="bg-amber-500/10 text-amber-600" />
         <StatCard label="Messages waiting" value={stats?.unhandled_messages ?? 0} sub="Need a callback" icon={PhoneIncoming} delay={0.15} tone="bg-violet-500/10 text-violet-600" />
       </div>
+
+      {/* Today's schedule — the first thing a receptionist needs. */}
+      <Card>
+        <CardHeader>
+          {/* Row layout lives on an inner div: CardHeader's own base is
+              `flex flex-col`, and Tailwind orders flex-col after flex-row
+              in the stylesheet, so `flex-row` on the CardHeader itself
+              silently loses and the header renders stacked and centred. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle>Today&apos;s appointments</CardTitle>
+              <CardDescription>{todaysAppts.length === 0 ? 'Nothing booked for today yet' : `${todaysAppts.length} booked today${clinicTz ? ` · all times ${tzAbbreviation(clinicTz)}` : ''}`}</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => navigate('/appointments')}>All appointments</Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {todaysAppts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No appointments on the book for today. Run a demo call from Live call and one will appear here.</p>
+          ) : (
+            <div className="divide-y">
+              {todaysAppts.map((a) => (
+                <div key={a.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm first:pt-0 last:pb-0">
+                  <span className="w-14 shrink-0 font-semibold tabular-nums">{a.slot.slice(11)}</span>
+                  <span className="font-medium">{a.patient_name}</span>
+                  <span className="text-muted-foreground">{a.service}</span>
+                  {a.phone && <span className="ml-auto text-xs text-muted-foreground">{a.phone}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="lg:col-span-2">
@@ -155,6 +207,7 @@ export default function Overview() {
                 <div key={c.id} className="-mx-2 flex flex-wrap items-center gap-2 rounded-lg px-2 py-3 text-sm transition-colors hover:bg-accent/50">
                   <span className="font-medium">{c.caller}</span>
                   <span className="min-w-0 flex-1 text-muted-foreground">{c.summary}</span>
+                  {c.started_at && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{new Date(c.started_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
                   <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
                   <Badge tone={c.escalated ? 'danger' : 'success'}>{c.escalated ? 'Escalated' : c.outcome}</Badge>
                 </div>

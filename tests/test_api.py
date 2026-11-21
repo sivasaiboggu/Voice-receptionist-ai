@@ -204,3 +204,90 @@ def test_call_turn_empty_text_is_handled_not_a_crash(client):
     assert r.status_code == 200
     assert r.json()["intent"] == "unknown"
     assert "didn't quite catch" in r.json()["reply"]
+
+
+def test_call_start_logs_abandoned_call(client):
+    """Starting a second call for the same number used to silently drop
+    the first session — its transcript and outcome were never logged."""
+    caller = "+915555555555"
+    client.post("/call/start", params={"caller": caller})
+    client.post("/call/turn", json={"caller": caller, "text": "What are your opening hours?"})
+    client.post("/call/start", params={"caller": caller})
+    calls = [c for c in client.get("/calls").json() if c["caller"] == caller]
+    assert len(calls) == 1
+    assert calls[0]["outcome"] == "answered"
+    assert "opening hours" in calls[0]["transcript"].lower()
+    # The new session is still live and endable.
+    r = client.post("/call/end", params={"caller": caller})
+    assert r.json()["ok"] is True
+
+
+def test_call_start_with_no_caller_turn_logs_nothing(client):
+    """A session that never got past the greeting is not worth a log row:
+    starting over before the caller speaks must not create an empty call."""
+    caller = "+915444444444"
+    client.post("/call/start", params={"caller": caller})
+    client.post("/call/start", params={"caller": caller})
+    calls = [c for c in client.get("/calls").json() if c["caller"] == caller]
+    assert calls == []
+    client.post("/call/end", params={"caller": caller})
+
+
+def test_notify_sms_twilio_api_error_is_demo_record_not_500(client, monkeypatch):
+    """Twilio keys set but the API call itself fails (bad number, bad
+    credentials, outage): /notify/sms used to raise a 500. It must
+    return a demo record with the error instead."""
+    import sys
+    import types
+
+    import backend.app.voice.twilio_voice as tv
+
+    monkeypatch.setattr(tv, "TWILIO_SID", "ACxxxx")
+    monkeypatch.setattr(tv, "TWILIO_TOKEN", "tok")
+    monkeypatch.setattr(tv, "TWILIO_NUMBER", "+15005550006")
+
+    twilio_mod = types.ModuleType("twilio")
+    rest_mod = types.ModuleType("twilio.rest")
+
+    class FailingClient:
+        def __init__(self, *a, **k):
+            pass
+
+        @property
+        def messages(self):
+            class _Messages:
+                def create(self, **k):
+                    raise RuntimeError("Unable to create record: bad number")
+
+            return _Messages()
+
+    rest_mod.Client = FailingClient
+    twilio_mod.rest = rest_mod
+    monkeypatch.setitem(sys.modules, "twilio", twilio_mod)
+    monkeypatch.setitem(sys.modules, "twilio.rest", rest_mod)
+
+    r = client.post("/notify/sms", json={"to": "+919573719115", "body": "hello"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sent"] is False
+    assert "Twilio send failed" in body["error"]
+
+
+def test_notify_sms_missing_twilio_package_is_demo_record(client, monkeypatch):
+    """Twilio keys set but the twilio package not installed: same
+    guarantee — a demo record, not a 500 (round 6 fixed this path for
+    the import; this pins it at the endpoint)."""
+    import sys
+
+    import backend.app.voice.twilio_voice as tv
+
+    monkeypatch.setattr(tv, "TWILIO_SID", "ACxxxx")
+    monkeypatch.setattr(tv, "TWILIO_TOKEN", "tok")
+    monkeypatch.setattr(tv, "TWILIO_NUMBER", "+15005550006")
+    monkeypatch.setitem(sys.modules, "twilio", None)
+
+    r = client.post("/notify/sms", json={"to": "+919573719115", "body": "hello"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["sent"] is False
+    assert "not installed" in body["error"]

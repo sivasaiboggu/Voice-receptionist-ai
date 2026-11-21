@@ -148,5 +148,20 @@ def test_slots_endpoint_reports_timezone(client):
     assert body["available"]
 
 
+def test_slots_endpoint_service_filter(client):
+    """?service= only offers slots the whole service fits in: a
+    13:00 root canal would run into lunch, a 13:00 checkup fits."""
+    from datetime import date, timedelta
+
+    booking.seed_slots()
+    day = booking.now_clinic().date() + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    slot = f"{day.isoformat()} 13:00"
+    assert slot in client.get("/slots?service=General%20checkup&limit=100").json()["available"]
+    assert slot not in client.get("/slots?service=Root%20canal%20treatment&limit=100").json()["available"]
+    assert client.get("/slots?service=Brain%20surgery").json()["available"] == []
+
+
 def test_health_reports_timezone(client):
     assert client.get("/health").json()["timezone"] == booking.clinic_tz_name()

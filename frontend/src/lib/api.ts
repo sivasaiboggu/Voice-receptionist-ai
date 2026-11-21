@@ -78,7 +78,7 @@ export const api = {
   health: () => get<Health>('/health'),
   calls: () => get<Call[]>('/calls'),
   appointments: () => get<Appt[]>('/appointments'),
-  slots: () => get<{ available: string[]; timezone: string }>('/slots'),
+  slots: (service?: string) => get<{ available: string[]; timezone: string }>(service ? `/slots?service=${encodeURIComponent(service)}` : '/slots'),
   analytics: () => get<Stats>('/analytics'),
   // Live turn-by-turn session: start greets, each turn returns the agent
   // reply with intent/state, end logs the call and returns its summary.

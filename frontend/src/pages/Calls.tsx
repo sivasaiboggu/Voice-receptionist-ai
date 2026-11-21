@@ -109,18 +109,33 @@ export default function Calls() {
       {filtered.map((c, i) => (
         <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}>
           <Card className="cursor-pointer hover:-translate-y-0.5 hover:shadow-lift" onClick={() => setOpen(open === c.id ? null : c.id)}>
-            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-              <CardTitle className="text-base">{c.caller} <span className="font-normal text-muted-foreground">— {c.summary}</span></CardTitle>
-              <div className="flex flex-wrap gap-2">
-                <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
-                <Badge tone={c.sentiment === 'negative' ? 'danger' : c.sentiment === 'positive' ? 'success' : 'default'}>{c.sentiment}</Badge>
-                {c.escalated ? <Badge tone="danger">Escalated</Badge> : null}
+            <CardHeader>
+              {/* See Overview: the row flex must be an inner div, not on
+                  the CardHeader — its base `flex-col` beats `flex-row`. */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-base">{c.caller} <span className="font-normal text-muted-foreground">— {c.summary}</span></CardTitle>
+                <div className="flex flex-wrap gap-2">
+                  <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
+                  <Badge tone={c.sentiment === 'negative' ? 'danger' : c.sentiment === 'positive' ? 'success' : 'default'}>{c.sentiment}</Badge>
+                  {c.escalated ? <Badge tone="danger">Escalated</Badge> : null}
+                </div>
               </div>
             </CardHeader>
             {open === c.id && (
               <CardContent>
                 {c.transcript ? (
-                  <pre className="whitespace-pre-wrap rounded-xl border bg-muted/50 p-4 text-sm leading-relaxed shadow-inner">{c.transcript}</pre>
+                  <div className="space-y-2 rounded-xl border bg-muted/50 p-4 shadow-inner">
+                    {c.transcript.split('\n').filter(Boolean).map((line, i) => {
+                      const isCaller = line.startsWith('Caller:')
+                      const text = line.replace(/^(Agent|Caller):\s?/, '')
+                      return (
+                        <div key={i} className={`flex gap-2 text-sm leading-relaxed ${isCaller ? 'border-l-2 border-primary/60 pl-3' : 'pl-3'}`}>
+                          <span className={`w-12 shrink-0 text-xs font-semibold uppercase tracking-wide ${isCaller ? 'text-primary' : 'text-muted-foreground'}`}>{isCaller ? 'Caller' : 'Agent'}</span>
+                          <span className="min-w-0">{text}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
                 ) : (
                   <p className="rounded-xl border bg-muted/50 p-4 text-sm text-muted-foreground">No transcript was stored for this call.</p>
                 )}

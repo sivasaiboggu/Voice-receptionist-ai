@@ -108,7 +108,9 @@ def test_invalid_name_and_phone_rejected():
 
 def test_service_name_case_insensitive():
     booking.seed_slots()
-    slots = booking.available_slots(limit=1)
+    # The slot must fit the service: the first free slot overall can be
+    # 19:30, which a 45-minute cleaning would run past closing.
+    slots = booking.available_slots("teeth cleaning", limit=1)
     ok, msg = booking.book("Asha", "+91 90000 00001", "teeth cleaning", slots[0])
     assert ok is True
     assert "Teeth cleaning" in msg
@@ -209,7 +211,7 @@ def test_agent_message_flow():
 
 def test_agent_books_named_slot_then_name():
     booking.seed_slots()
-    slots = booking.available_slots(limit=1)
+    slots = booking.available_slots("Teeth cleaning", limit=1)
     ag = va.VoiceAgent(caller="+91 90000 00005")
     ag.greet()
     reply = ag.handle(f"Book teeth cleaning on {slots[0]}")
@@ -221,7 +223,7 @@ def test_agent_books_named_slot_then_name():
 
 def test_agent_failed_booking_clears_stale_sms():
     booking.seed_slots()
-    slots = booking.available_slots(limit=1)
+    slots = booking.available_slots("Teeth cleaning", limit=1)
     ag = va.VoiceAgent(caller="+91 90000 00006")
     ag.book("Asha", "Teeth cleaning", slots[0])
     assert ag.follow_up_sms

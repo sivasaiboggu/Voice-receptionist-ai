@@ -57,7 +57,14 @@ def send_sms(to, body):
                 "error": "Twilio is not installed on this server — SMS cannot be sent."}
 
     client = Client(TWILIO_SID, TWILIO_TOKEN)
-    msg = client.messages.create(body=body, from_=TWILIO_NUMBER, to=to)
+    try:
+        msg = client.messages.create(body=body, from_=TWILIO_NUMBER, to=to)
+    except Exception as e:
+        # Bad number, bad credentials, Twilio outage: the API used to
+        # raise a 500 on /notify/sms. Fail as a demo record instead —
+        # the dashboard shows the error and nothing is lost.
+        return {"sent": False, "mode": "demo", "to": to, "body": body,
+                "error": f"Twilio send failed: {e}"}
     return {"sent": True, "mode": "twilio", "sid": msg.sid}
 
 

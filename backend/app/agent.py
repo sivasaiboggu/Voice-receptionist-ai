@@ -144,6 +144,7 @@ class VoiceAgent:
         self.escalated = False
         self.outcome = None
         self.pending = None  # (service, slot) awaiting the caller's name
+        self.pending_slot = None  # a slot the caller named before naming a service
         self.follow_up_sms = None
         init_db()
         booking.seed_slots()
@@ -188,10 +189,34 @@ class VoiceAgent:
             self.pending = None
             _ok, msg = self.book(text.strip(), service, pending_slot)
             return msg  # book() already added the reply to the transcript
+        if self.pending_slot:
+            # The caller named a time last turn and is now naming the
+            # service ("Teeth cleaning") or giving their name first.
+            # Without this the slot was forgotten: a service reply fell
+            # through to offering the next five slots, and a bare name
+            # fell through to the RAG "I don't have that" fallback.
+            service = extract_service(text)
+            if service and not slot:
+                self.pending = (service, self.pending_slot)
+                self.pending_slot = None
+                self.intent = "book"
+                self.state = "book"
+                return self.say(
+                    "Agent",
+                    f"{service} on {self.pending[1]} is available — may I have your name to confirm the booking?",
+                )
+            if NAME_RE.fullmatch(text.strip()) and classify_intent(text) == "faq":
+                self.intent = "book"
+                return self.say(
+                    "Agent",
+                    f"Thanks — and which service would you like on {self.pending_slot}?",
+                )
+            if slot and slot != self.pending_slot:
+                self.pending_slot = None  # a different time: start over below
+            elif classify_intent(text) != "book":
+                self.pending_slot = None  # caller moved on to something else
 
         self.intent = classify_intent(text)
-        sentiment = detect_sentiment(text)
-        urgency = detect_urgency(text, self.intent)
 
         if self.intent == "emergency":
             self.escalated = True
@@ -233,47 +258,51 @@ class VoiceAgent:
                 "or I can take a message for the clinic. What would you like?",
             )
 
-        self._last = {"intent": self.intent, "sentiment": sentiment, "urgency": urgency}
         return reply
 
     def _handle_book(self, text):
         """Booking turn: a caller naming a time/service gets that slot checked;
         otherwise the next free times are offered. Never promises a slot
-        that does not exist."""
+        that does not exist — and never offers an empty list: when nothing
+        is free the reply says so instead of 'our next available times
+        are: . Which one works for you?'"""
         self.state = "book"
         slot = extract_slot(text)
         service = extract_service(text)
         if slot:
             slot_dt = booking.parse_slot(slot)
             if slot_dt is not None and slot_dt < booking.now_clinic():
-                return self.say(
-                    "Agent",
+                return self._offer_alternatives(
                     f"That time ({slot}) is in the past — our next available times are: "
-                    + ", ".join(booking.available_slots(limit=5))
-                    + ". Which one works for you?",
                 )
             with db() as conn:
                 row = conn.execute("SELECT available FROM slots WHERE slot=?", (slot,)).fetchone()
             if row is None:
-                return self.say(
-                    "Agent",
+                return self._offer_alternatives(
                     f"That time ({slot}) is outside our opening hours — our next available times are: "
-                    + ", ".join(booking.available_slots(limit=5))
-                    + ". Which one works for you?",
                 )
             if row["available"] == 0:
-                return self.say(
-                    "Agent",
+                return self._offer_alternatives(
                     f"Sorry, {slot} is already booked. Our next available times are: "
-                    + ", ".join(booking.available_slots(limit=5))
-                    + ". Which one works for you?",
                 )
             if service:
+                # The slot is free, but the service may not fit in it
+                # (a 60-minute root canal at 19:30 runs past closing) or
+                # may overlap a booking in the next slot.
+                _, _, error = booking.validate_booking(
+                    "Patient", self.caller, service, slot
+                )
+                conflict = booking.slot_conflict(slot, service) if not error else None
+                if error or conflict:
+                    return self._offer_alternatives(
+                        (error or conflict) + " Our next available times are: "
+                    )
                 self.pending = (service, slot)
                 return self.say(
                     "Agent",
                     f"{service} on {slot} is available — may I have your name to confirm the booking?",
                 )
+            self.pending_slot = slot
             return self.say(
                 "Agent",
                 f"{slot} is available — which service would you like, and may I have your name?",
@@ -292,6 +321,19 @@ class VoiceAgent:
             + ", ".join(slots)
             + ". Which time works for you, and may I have your name?",
         )
+
+    def _offer_alternatives(self, prefix):
+        """Reply with `prefix` + the next free times, or an honest
+        no-availability message when the list is empty."""
+        slots = booking.available_slots(limit=5)
+        if not slots:
+            self.outcome = "answered"
+            return self.say(
+                "Agent",
+                "I'm sorry — we have no free appointments in the next week. "
+                "Would you like me to take a message so the clinic can call you back?",
+            )
+        return self.say("Agent", prefix + ", ".join(slots) + ". Which one works for you?")
 
     def _do_cancel(self, slot):
         ok, msg = booking.cancel(slot)
@@ -339,10 +381,35 @@ class VoiceAgent:
         self.state = "confirm"
         return self.say("Agent", "Thank you — I've taken your message and the clinic will call you back today.")
 
+    def _call_signals(self):
+        """Sentiment and urgency for the whole call, from every caller line.
+
+        The old code logged only the LAST turn's signals: a caller who
+        shouted in pain and then said "thanks" was logged as positive /
+        low urgency, and an escalation decided on an early turn vanished
+        from the record. Negative beats positive, high beats medium.
+        """
+        sentiment = "neutral"
+        urgency = "low"
+        for line in self.transcript:
+            if not line.startswith("Caller:"):
+                continue
+            text = line[len("Caller:"):].strip()
+            if detect_sentiment(text) == "negative":
+                sentiment = "negative"
+            elif detect_sentiment(text) == "positive" and sentiment != "negative":
+                sentiment = "positive"
+            intent = classify_intent(text)
+            if intent == "emergency":
+                urgency = "high"
+            elif detect_urgency(text, intent) == "medium" and urgency != "high":
+                urgency = "medium"
+        return sentiment, urgency
+
     def end_call(self):
         transcript = "\n".join(self.transcript)
         summary = summarise(transcript)
-        last = getattr(self, "_last", {"sentiment": "neutral", "urgency": "low"})
+        sentiment, urgency = self._call_signals()
         with db() as conn:
             conn.execute(
                 """INSERT INTO calls (caller, started_at, transcript, summary,
@@ -350,7 +417,7 @@ class VoiceAgent:
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (
                     self.caller, booking.now_utc().isoformat(), transcript, summary,
-                    last["sentiment"], last["urgency"],
+                    sentiment, urgency,
                     self.outcome or "answered", 1 if self.escalated else 0,
                 ),
             )
@@ -358,8 +425,8 @@ class VoiceAgent:
             "caller": self.caller,
             "outcome": self.outcome,
             "escalated": self.escalated,
-            "sentiment": last["sentiment"],
-            "urgency": last["urgency"],
+            "sentiment": sentiment,
+            "urgency": urgency,
             "summary": summary,
             "transcript": transcript,
             "follow_up_sms": getattr(self, "follow_up_sms", None),
@@ -378,8 +445,10 @@ def run_demo_call(caller="+919573719115", turns=None):
     for t in turns:
         out.append(agent.handle(t))
     # Book the first available slot as part of the demo — unless the call
-    # escalated (an emergency/human handoff must never auto-book).
-    slots = booking.available_slots(limit=1)
+    # escalated (an emergency/human handoff must never auto-book). The
+    # slot must fit the service: the first free slot overall can be
+    # 19:30, which a 45-minute cleaning would run past closing.
+    slots = booking.available_slots(service="Teeth cleaning", limit=1)
     if slots and not agent.escalated:
         ok, msg = agent.book("Demo Patient", "Teeth cleaning", slots[0])
         out.append(msg)
