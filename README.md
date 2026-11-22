@@ -8,7 +8,7 @@ base, and escalates to a human when it should.
 
 ## What it does
 
-- **Voice agent core** — LangGraph-style state machine:
+- **Voice agent core** — hand-rolled state machine:
   `greet → understand intent → RAG / booking / message / escalate → confirm → log call`
 - **Appointment booking** — FastAPI + SQLite, 30-minute slots, **double-booking
   prevented atomically**, SMS/WhatsApp confirmation draft after every booking
@@ -74,7 +74,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 60 tests (62 with a live Postgres, see below)
+.venv/bin/python -m pytest tests/ -q             # 96 tests (99 with a live Postgres, see below)
 ```
 
 Run the API:
@@ -165,6 +165,21 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.6 (cancel is name-checked, prices answer first, playbook pass)
+
+- **Logic — cancelling by time alone is gone**: the agent used to cancel whoever's appointment sat on the named slot — any caller could cancel anyone else's booking by naming its time — and a booking turn given while the agent waited for a time to cancel ("book 2026-11-23 10:00") was treated as a cancel confirmation. Cancelling now asks for the caller's name and checks it against the booking (a wrong name fails, the right name cancels), and a booking/hours/price/services/emergency/human/message turn while waiting to cancel falls through to normal handling instead of cancelling. Naming the name in the same turn ("cancel … on 2026-11-23 10:00, I'm Asha") cancels at once. Tested: wrong-name cancel fails, same-turn name cancels, booking turn while waiting does not cancel.
+- **Logic — "My name is Rahul" books**: when the agent asked for a name, only a bare name matched, so a natural reply fell through to the RAG "I don't have that information" fallback. "My name is …", "This is …", "I'm …" and "Call me …" now book too. The name check only applies to booking and cancel turns, so "I am in terrible pain" is never taken as a name. Tested.
+- **Logic — the price question was answered with slots**: "How much does cleaning cost?" came back as a list of booking slots, because intent classification checked booking before price and "cleaning" is a booking keyword. Price is now checked before booking; a booking request with no price words still books. The demo call's price turn now answers with the cited prices ("Consultation Rs 500. Cleaning Rs 1,500. Filling Rs 1,800. (Source: pricing.md, services.md)"), matching the README's demo-flow claim. Tested, including a test that replays the demo call's price turn against the live agent.
+- **Logic — `/analytics` no longer reports a hardcoded answer rate**: it returned `answer_rate: 1.0` whenever any calls existed. The field is removed; the endpoint now reports `calls_today`, counted from the real call log in clinic time (unparseable stamps skipped). Tested.
+- **Logic — `available_slots()` on a fresh database returned nothing**: slot seeding only happened at API import / agent creation, so the CLI printed an empty list on a fresh DB. Seeding (INSERT OR IGNORE, idempotent) now runs inside `available_slots()` too. Tested.
+- **UI — design-playbook pass (docs/design-references-0.3.6.md)**: type is now Satoshi (Fontshare, self-hosted woff2, 400/500/700), one family, with tabular figures throughout — verified with fontTools to ship a real `tnum` feature (General Sans was tried first and rejected: proportional digits, no `tnum`). Google Fonts links are gone, so the app no longer depends on a network font fetch. Decorative gradients are out (greeting, logo mark, active-nav pill, bar-chart fill, caller bubbles, transcript panel, empty-state chips, skeleton), the skeleton is a plain pulse, and charts draw their final shape immediately (`isAnimationActive={false}`).
+- **UI — playbook slop checklist, now enforced by the build**: frosted surfaces are solid (sidebar, topbar, mobile nav, toasts — no `backdrop-blur` anywhere), staggered entrances are gone (stat cards, charts, call rows and appointment cards render at once; dead `.rise` CSS removed), the live badge's breathing glow and ping dot are gone (a solid dot plus the running call timer shows liveness), and hover lifts are gone from cards and calendar days (hover is a flat background or border tint). Motion that stays marks a state change: new chat bubbles, the call summary appearing, toasts, typing dots. The copy-guard test now fails the build on `backdrop-blur`, staggered-entrance patterns (`delay:` / `delay={` / `stagger`) and `animate-ping`, as well as emoji, decorative symbols and banned marketing words. The guard caught a violation in my own StatCard comment during this round — the comment was reworded and the test passes.
+- **UI — found by real renders this round**: the Overview "Recent calls" rows collapsed to a one-word-wide column at 390px (caller number, date and badges left the summary ~60px). The summary now takes the full row width on small screens and flexes beside the meta line from `sm` up. Verified by re-rendering the 390px shot.
+- **Config — Vite base is relative, unused deps removed**: the build emitted absolute `/assets/...` paths, so file:// renders (and GitHub Pages under a subpath) came out blank; `base: './'` fixes it. `langgraph` and `langchain-core` are removed from `backend/requirements.txt` — imported nowhere; the agent is a hand-rolled state machine, and the README and agent docstring now say so.
+- **Visual proof** — rendered headlessly against the live backend + production build, real demo data (docs/visual-proof-0.3.6/, PNGs kept local only — the snapshot push accepts UTF-8 files, so binary renders are not pushed): Overview light + dark + 390px mobile, Calls with an expanded transcript, Appointments list + calendar, the Cancelled filter showing the one cancelled appointment, Live call after a completed scripted run, and the call summary with the phone-frame SMS preview. The counts moved between captures (20 calls / 18 booked at the first capture, 21 / 19 after the live-call runs) because each scripted live-call run logs another real call. The render script's debug port moved from 9227 to 9233 — the AI SDR agent's headless Chrome holds 9227 on this VM and the script was driving that agent's page instead of this project's. Dark mode was rendered by setting the app's own theme key, not a browser force-dark. The bar chart's "escalated-eme…" x-label truncation is a pre-existing tick-formatter quirk, left as is. The Sunday-hours tension (knowledge base says emergencies only, engine still generates ordinary bookable Sunday slots) is unchanged — still Siva's call.
+- **Tests** — 96 passed, 3 skipped on SQLite (the 3 live Postgres tests, skipped without `VOICE_TEST_POSTGRES_URL`); 13 new this round: 7 cancel-flow tests (including fresh-DB slot seeding and analytics `calls_today`), 2 copy-guard tests (emoji/decorative symbols, banned marketing words) plus 3 more guard tests (frosted surfaces, staggered entrances, breathing dots), and 1 price-intent test that replays the demo call's price turn against the live agent. No live Postgres run this round.
+- **Dependencies** — `langgraph` and `langchain-core` removed (unused). No other changes.
 
 ## What changed in v0.3.5 (overlap race closed + visual proof)
 

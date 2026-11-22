@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { AlertTriangle, PhoneCall, RefreshCw, Search, X } from 'lucide-react'
 import { api, Call } from '../lib/api'
 import EmptyState from '../components/EmptyState'
@@ -74,7 +73,7 @@ export default function Calls() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search caller, summary or transcript…"
+              placeholder="Search calls…"
               aria-label="Search calls"
               className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
             />
@@ -106,9 +105,9 @@ export default function Calls() {
       {calls.length > 0 && filtered.length === 0 && (
         <EmptyState icon={Search} title="No calls match" desc="Try a different search term or clear the filters — the calls are still there." action={<Button size="sm" variant="outline" onClick={clearFilters}>Clear filters</Button>} />
       )}
-      {filtered.map((c, i) => (
-        <motion.div key={c.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}>
-          <Card className="cursor-pointer hover:-translate-y-0.5 hover:shadow-lift" onClick={() => setOpen(open === c.id ? null : c.id)}>
+      {filtered.map((c) => (
+        <div key={c.id}>
+          <Card className="cursor-pointer transition-colors hover:bg-accent/50" onClick={() => setOpen(open === c.id ? null : c.id)}>
             <CardHeader>
               {/* See Overview: the row flex must be an inner div, not on
                   the CardHeader — its base `flex-col` beats `flex-row`. */}
@@ -147,7 +146,7 @@ export default function Calls() {
               </CardContent>
             )}
           </Card>
-        </motion.div>
+        </div>
       ))}
     </div>
   )

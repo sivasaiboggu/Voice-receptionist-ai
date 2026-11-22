@@ -1,4 +1,4 @@
-"""Voice agent core — LangGraph-style state machine.
+"""Voice agent core — hand-rolled state machine (no framework needed).
 
 Flow: greet → understand intent → RAG / booking / message / escalate
 → confirm → log call (transcript + summary + sentiment + urgency).
@@ -20,7 +20,9 @@ BUSINESS = os.environ.get("BUSINESS_NAME", "Sunrise Dental Clinic")
 # in "voice agent" as a human request), so every keyword is matched as a
 # whole word or phrase. Priority order is deliberate: an emergency always
 # wins, a cancellation beats a booking ("cancel my appointment" contains
-# "appointment"), and a human request beats a FAQ.
+# "appointment"), a price question beats a booking ("How much does
+# cleaning cost?" names the service but asks its price), and a human
+# request beats a FAQ.
 INTENTS = {
     "book": ["book", "booking", "appointment", "schedule", "checkup", "check-up",
              "cleaning", "visit", "see a dentist", "see the dentist"],
@@ -41,6 +43,30 @@ INTENTS = {
 
 SLOT_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z .'\-]{1,60}")
+_NAME_INTRO_RE = re.compile(
+    r"(?:my name is|this is|i am|i'm|call me)\s+([A-Za-z][A-Za-z .'\-]{1,60})",
+    re.IGNORECASE,
+)
+
+
+def extract_name(text):
+    """Pull a caller's name out of a turn: a bare name ("Rahul") or an
+    introduction ("My name is Rahul", "This is Rahul", "I'm Rahul").
+
+    Returns None when the text is not a name. Only a plain statement
+    can carry one: a request ("book ..."), a question ("what time ...")
+    or an emergency ("I am in terrible pain" — which matches the
+    "I am ..." shape) is never taken as a name."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if classify_intent(t) not in ("faq", "cancel"):
+        return None
+    m = _NAME_INTRO_RE.search(t)
+    if m:
+        name = m.group(1).strip().rstrip(".")
+        return name if NAME_RE.fullmatch(name) else None
+    return t if NAME_RE.fullmatch(t) else None
 
 
 def _has_keyword(text, keyword):
@@ -79,6 +105,13 @@ def classify_intent(text):
         return "cancel"
     if any(_has_keyword(t, w) for w in INTENTS["human"]):
         return "human"
+    # A price question beats a booking: "How much does cleaning cost?"
+    # names the service ("cleaning" is a booking keyword) but asks its
+    # price — the old order answered it with a list of slots instead of
+    # the Rs 1,500 the knowledge base has, and the demo call's own
+    # price turn came back as a booking offer.
+    if any(_has_keyword(t, w) for w in INTENTS["price"]):
+        return "price"
     if any(_has_keyword(t, w) for w in INTENTS["book"]):
         return "book"
     # "What time do you do root canal?" is a services question, not hours.
@@ -145,6 +178,7 @@ class VoiceAgent:
         self.outcome = None
         self.pending = None  # (service, slot) awaiting the caller's name
         self.pending_slot = None  # a slot the caller named before naming a service
+        self.pending_cancel = None  # a slot awaiting a name check before cancelling
         self.follow_up_sms = None
         init_db()
         booking.seed_slots()
@@ -177,18 +211,53 @@ class VoiceAgent:
         # Multi-turn continuations, checked before fresh intent classification:
         # the caller is answering our follow-up question, not starting over.
         slot = extract_slot(text)
+        if self.state == "cancel" and self.pending_cancel:
+            # The caller is answering "your name, so I cancel the right
+            # appointment?" — a name cancels (name-checked, so one caller
+            # cannot cancel someone else's appointment by naming a time);
+            # a different time switches the slot; anything else drops the
+            # pending cancel and is handled as a fresh turn.
+            name = extract_name(text) if classify_intent(text) in ("faq", "cancel") else None
+            if name:
+                slot_to_cancel = self.pending_cancel
+                self.pending_cancel = None
+                self.intent = "cancel"
+                return self._do_cancel(slot_to_cancel, name)
+            if slot and slot != self.pending_cancel:
+                self.pending_cancel = slot
+                self.intent = "cancel"
+                return self.say(
+                    "Agent",
+                    f"Thanks — and your name, so I cancel the appointment on {slot}?",
+                )
+            if classify_intent(text) in ("book", "hours", "price", "services", "emergency", "human", "message"):
+                self.pending_cancel = None  # caller moved on; fall through below
+            else:
+                self.intent = "cancel"
+                return self.say(
+                    "Agent",
+                    "Sorry — I need your name to cancel the appointment. Could you tell me your name?",
+                )
         if self.state == "cancel" and slot:
-            self.intent = "cancel"
-            return self._do_cancel(slot)
+            if classify_intent(text) in ("cancel", "faq"):
+                # A bare time ("2026-11-23 10:00") or "cancel ... on
+                # <time>": start the name-checked cancel below.
+                self.intent = "cancel"
+                return self._start_cancel(slot, text)
+            # Not a cancel turn after all ("book 2026-11-23 10:00" while
+            # we were waiting for a time to cancel): fall through to the
+            # normal handling below instead of cancelling that slot.
         if self.state == "message":
             self.intent = "message"
             return self.take_message(text)
-        if self.pending and NAME_RE.fullmatch(text.strip()) and classify_intent(text) == "faq":
-            self.intent = "book"
-            service, pending_slot = self.pending
-            self.pending = None
-            _ok, msg = self.book(text.strip(), service, pending_slot)
-            return msg  # book() already added the reply to the transcript
+        if self.pending:
+            name = extract_name(text)
+            if name and classify_intent(text) == "faq":
+                self.intent = "book"
+                service, pending_slot = self.pending
+                self.pending = None
+                _ok, msg = self.book(name, service, pending_slot)
+                return msg  # book() already added the reply to the transcript
         if self.pending_slot:
             # The caller named a time last turn and is now naming the
             # service ("Teeth cleaning") or giving their name first.
@@ -205,7 +274,7 @@ class VoiceAgent:
                     "Agent",
                     f"{service} on {self.pending[1]} is available — may I have your name to confirm the booking?",
                 )
-            if NAME_RE.fullmatch(text.strip()) and classify_intent(text) == "faq":
+            if extract_name(text) and classify_intent(text) == "faq":
                 self.intent = "book"
                 return self.say(
                     "Agent",
@@ -238,7 +307,7 @@ class VoiceAgent:
         elif self.intent == "cancel":
             self.state = "cancel"
             if slot:
-                reply = self._do_cancel(slot)
+                reply = self._start_cancel(slot, text)
             else:
                 reply = self.say("Agent", "No problem — could you tell me the date and time of the appointment to cancel? For example, 2026-11-21 10:00.")
         elif self.intent == "message":
@@ -345,8 +414,26 @@ class VoiceAgent:
             )
         return self.say("Agent", prefix + ", ".join(slots) + ". Which one works for you?")
 
-    def _do_cancel(self, slot):
-        ok, msg = booking.cancel(slot)
+    def _start_cancel(self, slot, text):
+        """Begin cancelling `slot`: cancel at once when the caller already
+        gave their name in the same turn ("cancel ... on 2026-11-23 10:00,
+        I'm Rahul"), otherwise ask for it. Cancelling by time alone used
+        to let any caller cancel anyone else's appointment."""
+        name = extract_name(text) if classify_intent(text) == "cancel" else None
+        if name:
+            self.intent = "cancel"
+            return self._do_cancel(slot, name)
+        self.pending_cancel = slot
+        self.state = "cancel"
+        self.intent = "cancel"
+        return self.say(
+            "Agent",
+            "Of course — and your name, so I cancel the right appointment?",
+        )
+
+    def _do_cancel(self, slot, patient_name=None):
+        ok, msg = booking.cancel(slot, patient_name=patient_name)
+        self.pending_cancel = None
         self.state = "confirm"
         self.outcome = "cancelled" if ok else "answered"
         return self.say("Agent", msg + (" Is there anything else I can help with?" if ok else " Could you check the date and time and try again?"))

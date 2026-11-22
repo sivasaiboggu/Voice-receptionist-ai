@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarX2, List, RefreshCw } from 'lucide-react'
 import { api, Appt } from '../lib/api'
 import { useToast } from '../lib/useToast'
@@ -170,7 +169,7 @@ export default function Appointments() {
                   key={d.key}
                   onClick={() => setSelectedDay(selectedDay === d.key ? null : d.key)}
                   aria-pressed={selectedDay === d.key}
-                  className={`min-h-24 rounded-xl border p-2.5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/60 hover:shadow-lift ${selectedDay === d.key ? 'border-primary bg-primary/10 shadow-md ring-2 ring-primary/25' : ''} ${d.isToday ? 'bg-primary/5 ring-1 ring-inset ring-primary/20' : 'bg-card shadow-soft'}`}
+                  className={`min-h-24 rounded-xl border p-2.5 text-left transition-colors duration-200 hover:border-primary/60 ${selectedDay === d.key ? 'border-primary bg-primary/10 shadow-md ring-2 ring-primary/25' : ''} ${d.isToday ? 'bg-primary/5 ring-1 ring-inset ring-primary/20' : 'bg-card shadow-soft'}`}
                 >
                   <div className="flex items-baseline justify-between">
                     <span className="text-lg font-bold leading-none">{d.label}</span>
@@ -230,9 +229,9 @@ export default function Appointments() {
       )}
       {view === 'list' && (
       <div className="grid gap-4 sm:grid-cols-2">
-        {visibleAppts.map((a, i) => (
-          <motion.div key={a.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-            <Card className="hover:-translate-y-0.5 hover:shadow-lift">
+        {visibleAppts.map((a) => (
+          <div key={a.id}>
+            <Card>
               <CardHeader>
                 {/* See Overview: the row flex must be an inner div, not on
                     the CardHeader — its base `flex-col` beats `flex-row`. */}
@@ -257,7 +256,7 @@ export default function Appointments() {
                 )}
               </CardContent>
             </Card>
-          </motion.div>
+          </div>
         ))}
       </div>
       )}

@@ -43,6 +43,26 @@ def test_intent_classification():
     assert va.classify_intent("I am in terrible pain") == "emergency"
     assert va.classify_intent("Can I speak to a human?") == "human"
     assert va.classify_intent("What time do you open?") == "hours"
+    # A price question that names a service is a price question, not a
+    # booking: "cleaning" is a booking keyword, so the old order
+    # classified "How much does cleaning cost?" as book and answered
+    # with a list of slots instead of the price.
+    assert va.classify_intent("How much does cleaning cost?") == "price"
+    assert va.classify_intent("What does a checkup cost?") == "price"
+    assert va.classify_intent("How much is a root canal?") == "price"
+    # ...and a booking request with no price words still books.
+    assert va.classify_intent("I'd like to book a teeth cleaning") == "book"
+
+
+def test_demo_call_price_turn_is_answered_from_kb():
+    """The demo call's own price turn ("How much does cleaning cost?")
+    used to come back as a booking offer. It must be answered from the
+    knowledge base, with the price and a citation."""
+    result = va.run_demo_call()
+    price_reply = [r for r in result["replies"] if "1,500" in r]
+    assert price_reply, result["replies"]
+    assert "pricing.md" in price_reply[0]
+    assert result["outcome"] == "booked"
 
 
 def test_double_booking_prevented():
@@ -188,6 +208,8 @@ def test_agent_empty_turn_asks_for_clarification():
 
 
 def test_agent_cancel_flow():
+    """Cancelling by voice is name-checked: the agent asks for the
+    caller's name after the time, and only cancels when it matches."""
     booking.seed_slots()
     slots = booking.available_slots(limit=1)
     booking.book("Asha", "+91 90000 00001", "General checkup", slots[0])
@@ -195,7 +217,10 @@ def test_agent_cancel_flow():
     ag.greet()
     ag.handle("I want to cancel my appointment")
     assert ag.state == "cancel"
-    ag.handle(f"Yes, cancel {slots[0]}")
+    reply = ag.handle(f"Yes, cancel {slots[0]}")
+    assert "your name" in reply
+    assert ag.outcome != "cancelled"
+    ag.handle("Asha")
     assert ag.outcome == "cancelled"
     assert slots[0] in booking.available_slots(limit=100)
 

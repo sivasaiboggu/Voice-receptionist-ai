@@ -225,8 +225,8 @@ export default function LiveCall() {
           <p className="text-sm text-muted-foreground">Talk to the agent turn by turn — every reply comes from the live backend, and nothing is really dialled or texted.</p>
         </div>
         {running && (
-          <Badge tone="success" className="live-glow shadow-sm">
-            <span className="relative mr-1.5 flex h-2 w-2"><span className="absolute h-2 w-2 animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
+          <Badge tone="success">
+            <span className="relative mr-1.5 flex h-2 w-2"><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
             Live · <Clock3 className="ml-1 mr-0.5 h-3 w-3" />{fmtElapsed(elapsed)}
           </Badge>
         )}
@@ -280,13 +280,13 @@ export default function LiveCall() {
           </div>
 
           {/* Live transcript — chat bubbles appear as each turn lands. */}
-          <div ref={scrollRef} className="thin-scroll max-h-[480px] space-y-3 overflow-y-auto rounded-2xl border bg-gradient-to-b from-muted/40 to-muted/10 p-4 shadow-inner" aria-live="polite">
+          <div ref={scrollRef} className="thin-scroll max-h-[480px] space-y-3 overflow-y-auto rounded-2xl border bg-muted/30 p-4 shadow-inner" aria-live="polite">
             {messages.length === 0 && !typing && (
               <p className="text-sm text-muted-foreground">No call yet. Run a scenario to watch the agent work, or talk to it yourself and type the caller&apos;s lines.</p>
             )}
             {messages.map((m, i) => (
               <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`flex ${m.speaker === 'Caller' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.speaker === 'Caller' ? 'rounded-br-sm bg-gradient-to-br from-primary to-primary/85 text-primary-foreground shadow-md shadow-primary/25' : 'rounded-bl-sm border bg-card shadow-soft'}`}>
+                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.speaker === 'Caller' ? 'rounded-br-sm bg-primary text-primary-foreground shadow-sm' : 'rounded-bl-sm border bg-card shadow-soft'}`}>
                   <div className="mb-0.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide opacity-70">
                     {m.speaker === 'Caller' ? 'Caller' : 'Agent'}
                     {m.intent && <span className="rounded-full bg-black/10 px-1.5 py-0.5 normal-case dark:bg-white/10">{m.intent}</span>}

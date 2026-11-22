@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { AlertTriangle, CalendarCheck2, PhoneCall, PhoneIncoming, PhoneOff, RefreshCw } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { api, Appt, Call, Stats } from '../lib/api'
@@ -105,17 +104,17 @@ export default function Overview() {
 
   return (
     <div className="space-y-6">
-      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        <h1 className="text-2xl font-bold tracking-tight">{greeting()}, <span className="text-gradient">Sunrise Dental</span></h1>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">{greeting()}, <span className="text-primary">Sunrise Dental</span></h1>
         <p className="mt-1 text-sm text-muted-foreground">Your receptionist answered {stats?.calls_answered ?? 0} calls and booked {stats?.appointments_booked ?? 0} appointments.</p>
         <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge tone="warning">Demo data</Badge>These counts come from simulated demo calls stored by the backend — no real patient data.</p>
-      </motion.div>
+      </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Calls answered" value={stats?.calls_answered ?? 0} sub={`${Math.round((stats?.answer_rate ?? 0) * 100)}% answer rate`} icon={PhoneCall} delay={0} />
-        <StatCard label="Appointments" value={stats?.appointments_booked ?? 0} sub="Booked by the agent" icon={CalendarCheck2} delay={0.05} tone="bg-emerald-500/10 text-emerald-600" />
-        <StatCard label="Escalations" value={stats?.escalations ?? 0} sub="Handed to a human" icon={AlertTriangle} delay={0.1} tone="bg-amber-500/10 text-amber-600" />
-        <StatCard label="Messages waiting" value={stats?.unhandled_messages ?? 0} sub="Need a callback" icon={PhoneIncoming} delay={0.15} tone="bg-violet-500/10 text-violet-600" />
+        <StatCard label="Calls answered" value={stats?.calls_answered ?? 0} sub={`${stats?.calls_today ?? 0} logged today`} icon={PhoneCall} />
+        <StatCard label="Appointments" value={stats?.appointments_booked ?? 0} sub="Booked by the agent" icon={CalendarCheck2} tone="bg-emerald-500/10 text-emerald-600" />
+        <StatCard label="Escalations" value={stats?.escalations ?? 0} sub="Handed to a human" icon={AlertTriangle} tone="bg-amber-500/10 text-amber-600" />
+        <StatCard label="Messages waiting" value={stats?.unhandled_messages ?? 0} sub="Need a callback" icon={PhoneIncoming} tone="bg-violet-500/10 text-violet-600" />
       </div>
 
       {/* Today's schedule — the first thing a receptionist needs. */}
@@ -152,7 +151,7 @@ export default function Overview() {
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }} className="lg:col-span-2">
+        <div className="lg:col-span-2">
           <Card>
             <CardHeader><CardTitle>Call outcomes</CardTitle><CardDescription>What happened on each logged call</CardDescription></CardHeader>
             <CardContent className="h-72">
@@ -160,21 +159,19 @@ export default function Overview() {
                 <EmptyState icon={PhoneCall} title="No calls yet" desc="Run a demo call from Live call and the outcome chart will appear here." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
+                  {/* Solid bar fill, drawn at once: the old vertical
+                      gradient is decoration, and Recharts entrance
+                      animations can stick mid-flight in headless
+                      renders and leave the chart blank. */}
                   <BarChart data={outcomeData} margin={{ bottom: 8 }}>
-                    <defs>
-                      <linearGradient id="outcomeFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#3b82f6" stopOpacity={1} />
-                        <stop offset="100%" stopColor="#2563eb" stopOpacity={0.8} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[8, 8, 0, 0]} fill="url(#outcomeFill)" />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[8, 8, 0, 0]} fill="hsl(var(--primary))" isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               )}
             </CardContent>
           </Card>
-        </motion.div>
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        </div>
+        <div>
           <Card>
             <CardHeader><CardTitle>Caller sentiment</CardTitle><CardDescription>How callers felt</CardDescription></CardHeader>
             <CardContent className="h-72">
@@ -183,7 +180,7 @@ export default function Overview() {
               ) : (
                 <div className="relative h-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
+                    <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3} isAnimationActive={false}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
                   </ResponsiveContainer>
                   <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pb-8" aria-hidden>
                     <span className="text-2xl font-bold tracking-tight tabular-nums">{sentimentData.reduce((n, d) => n + d.value, 0)}</span>
@@ -193,7 +190,7 @@ export default function Overview() {
               )}
             </CardContent>
           </Card>
-        </motion.div>
+        </div>
       </div>
 
       <Card>
@@ -206,7 +203,7 @@ export default function Overview() {
               {calls.slice(0, 5).map((c) => (
                 <div key={c.id} className="-mx-2 flex flex-wrap items-center gap-2 rounded-lg px-2 py-3 text-sm transition-colors hover:bg-accent/50">
                   <span className="font-medium">{c.caller}</span>
-                  <span className="min-w-0 flex-1 text-muted-foreground">{c.summary}</span>
+                  <span className="min-w-0 w-full text-muted-foreground sm:w-auto sm:flex-1">{c.summary}</span>
                   {c.started_at && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{new Date(c.started_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
                   <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
                   <Badge tone={c.escalated ? 'danger' : 'success'}>{c.escalated ? 'Escalated' : c.outcome}</Badge>

@@ -246,6 +246,11 @@ def available_slots(service=None, limit=20):
     except (TypeError, ValueError):
         limit = 20
     limit = max(1, min(limit, 100))
+    # Slots are seeded at API import and on every agent creation, but a
+    # caller that never does either (e.g. the CLI `main slots` on a fresh
+    # database) used to get an empty list from an empty slots table.
+    # Seeding is INSERT OR IGNORE, so this is cheap and idempotent.
+    seed_slots()
     minutes = None
     if service is not None:
         canonical = normalise_service(service)

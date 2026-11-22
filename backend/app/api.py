@@ -1,6 +1,7 @@
 """FastAPI backend: chat/call simulation, bookings, calls, dashboard data."""
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -121,7 +122,7 @@ def health():
     return {
         "ok": db_status == "ok",
         "service": "voice-receptionist-agent",
-        "version": "0.3.5",
+        "version": "0.3.6",
         "demo_mode": _env_flag("DEMO_MODE", True),
         "database": db_status,
         # Clinic timezone slot times are shown in, e.g. "Asia/Kolkata".
@@ -223,12 +224,27 @@ def analytics():
         booked = conn.execute("SELECT COUNT(*) c FROM appointments WHERE status='booked'").fetchone()["c"]
         esc = conn.execute("SELECT COUNT(*) c FROM calls WHERE escalated=1").fetchone()["c"]
         msgs = conn.execute("SELECT COUNT(*) c FROM messages WHERE handled=0").fetchone()["c"]
+        # Calls logged today in the CLINIC timezone, from the real log —
+        # the old `answer_rate: 1.0` was a constant, not a measurement:
+        # every logged call was answered by definition, so it always
+        # read 100% and told the dashboard nothing.
+        today = booking.now_clinic().date()
+        calls_today = 0
+        for r in conn.execute("SELECT started_at FROM calls").fetchall():
+            try:
+                started = datetime.fromisoformat(r["started_at"])
+            except (TypeError, ValueError):
+                continue
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if started.astimezone(booking.CLINIC_TZ).date() == today:
+                calls_today += 1
     return {
         "calls_answered": total,
         "appointments_booked": booked,
         "escalations": esc,
         "unhandled_messages": msgs,
-        "answer_rate": 1.0 if total else 0.0,
+        "calls_today": calls_today,
     }
 
 

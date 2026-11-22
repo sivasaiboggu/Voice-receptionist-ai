@@ -21,7 +21,7 @@ export default {
         lift: '0 2px 4px rgb(0 0 0 / 0.05), 0 12px 28px -10px rgb(0 0 0 / 0.18)',
         glow: '0 0 0 1px hsl(var(--primary) / 0.12), 0 10px 32px -8px hsl(var(--primary) / 0.35)',
       },
-      fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+      fontFamily: { sans: ['Satoshi', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
     },
   },
   plugins: [],
