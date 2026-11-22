@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Phone } from 'lucide-react'
+import { ArrowRight, CalendarDays, Headphones } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api, type Appt, type Call, type Stats } from '../lib/api'
 import { callDate, clockTime, dateKey, formatDate, recordLabel, tzAbbreviation } from '../lib/utils'
@@ -28,7 +28,7 @@ function Distribution({ calls, field }: { calls: Call[]; field: 'outcome' | 'sen
         return (
           <li key={label}>
             <div><span>{recordLabel(label)}</span><span className="data-text">{count}</span></div>
-            <div className="chart-track" aria-hidden="true"><span style={{ width: `${(count / calls.length) * 100}%`, backgroundColor: `var(--${color})` }} /></div>
+            <div className="chart-track" aria-hidden="true"><span style={{ '--chart-value': count / calls.length, backgroundColor: `var(--${color})` } as React.CSSProperties} /></div>
           </li>
         )
       })}
@@ -52,7 +52,7 @@ export default function Overview() {
 
   const heading = (
     <PageHeading title="Front desk" description="Today’s schedule and the calls that came in.">
-      <Link className="desk-button button-default" to="/live"><Phone size={16} aria-hidden="true" />Live call</Link>
+      <Link className="desk-button button-default" to="/live"><Headphones size={17} aria-hidden="true" />Simulate a call</Link>
     </PageHeading>
   )
 
@@ -68,27 +68,32 @@ export default function Overview() {
   const next = todayAppointments.find((booking) => booking.slot.slice(11, 16) >= time)
   const chartNote = calls.length ? `Latest ${calls.length} call${calls.length === 1 ? '' : 's'}` : undefined
   const figures = [
-    { label: 'Appointments', value: stats.appointments_booked, note: 'Booked by the agent' },
-    { label: 'Escalations', value: stats.escalations, note: 'Handed to a person' },
-    { label: 'Messages waiting', value: stats.unhandled_messages, note: 'Need a callback' },
+    { label: 'Appointments', value: stats.appointments_booked, note: 'Currently booked' },
+    { label: 'Handoffs', value: stats.escalations, note: 'Sent to the clinic' },
+    { label: 'Messages waiting', value: stats.unhandled_messages, note: 'Awaiting a callback' },
   ]
 
   return (
     <>
       {heading}
-      <dl className="overview-figures" aria-label="Receptionist totals">
-        <div className="lead-figure">
-          <dt>Calls answered</dt><dd className="figure-value">{stats.calls_answered}</dd><dd className="muted">{stats.calls_today} today</dd>
-        </div>
-        {figures.map(({ label, value, note }) => (
-          <div key={label} className="support-figure"><dt>{label}</dt><dd className="figure-value">{value}</dd><dd className="muted">{note}</dd></div>
-        ))}
-      </dl>
+      <div className="overview-lead">
+        <section className="desk-plate" aria-labelledby="calls-today">
+          <h2 id="calls-today"><span className="desk-lamp" aria-hidden="true" />Calls answered today</h2>
+          <strong className="desk-total">{stats.calls_today}</strong>
+          <Link to="/calls">{stats.calls_answered} calls in all<ArrowRight size={16} aria-hidden="true" /></Link>
+        </section>
+        <section className="overview-figures desk-sheet" aria-labelledby="desk-totals">
+          <h2 id="desk-totals">At a glance</h2>
+          <dl>{figures.map(({ label, value, note }) => (
+            <div key={label} className="support-figure"><dt>{label}</dt><dd className="figure-value">{value}</dd><dd className="muted">{note}</dd></div>
+          ))}</dl>
+        </section>
+      </div>
 
       <div className="overview-grid">
-        <section className="ruled-section">
+        <section className="ruled-section schedule-section">
           <SectionHeading title="Today’s appointments" note={`${todayAppointments.length} booked${zone ? ` · ${tzAbbreviation(zone)}` : ''}`}>
-            <ActionLink to="/appointments">All appointments</ActionLink>
+            <Link className="action-link" to="/appointments"><CalendarDays size={17} aria-hidden="true" />View schedule</Link>
           </SectionHeading>
           {todayAppointments.length ? (
             <ul className="register">

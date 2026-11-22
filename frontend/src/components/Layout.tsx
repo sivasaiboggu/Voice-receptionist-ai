@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from 'react-router-dom'
-import { CalendarDays, LayoutDashboard, Moon, Phone, PhoneCall, Settings, Sun } from 'lucide-react'
+import { CalendarDays, Headphones, LayoutDashboard, Moon, Phone, Settings, Sun } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
 import { api, type Health } from '../lib/api'
 import { formatDate, tzAbbreviation } from '../lib/utils'
@@ -9,9 +9,9 @@ import { Button } from './ui/button'
 
 const nav = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
-  { to: '/calls', label: 'Calls', icon: PhoneCall },
+  { to: '/calls', label: 'Calls', icon: Phone },
   { to: '/appointments', label: 'Appointments', icon: CalendarDays },
-  { to: '/live', label: 'Live call', icon: Phone },
+  { to: '/live', label: 'Live call', icon: Headphones },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
@@ -41,6 +41,7 @@ export default function Layout() {
   const main = useRef<HTMLElement>(null)
   const { pathname } = useLocation()
   const previousPath = useRef(pathname)
+  const [hasNavigated, setHasNavigated] = useState(false)
 
   const checkConnection = useCallback(() => {
     const id = ++request.current
@@ -71,9 +72,10 @@ export default function Layout() {
     return () => window.clearInterval(timer)
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (pathname === previousPath.current) return
     previousPath.current = pathname
+    setHasNavigated(true)
     window.scrollTo(0, 0)
     main.current?.focus({ preventScroll: true })
   }, [pathname])
@@ -86,28 +88,16 @@ export default function Layout() {
   return (
     <div className="desk-shell">
       <a className="skip-link" href="#main-content">Skip to content</a>
-      <header className="desk-header">
+      <aside className="desk-rail">
         <div className="desk-brand">
           <Link to="/">
-            <svg className="brand-mark" width="36" height="36" viewBox="0 0 36 36" aria-hidden="true">
-              <rect x=".5" y=".5" width="35" height="35" rx="4" fill="none" stroke="currentColor" />
-              <path d="M10 14h16M10 18h16M10 22h16" fill="none" stroke="currentColor" />
-              <path d="M15 9v18" fill="none" stroke="currentColor" strokeWidth="2" />
-            </svg>
-            <span><strong>Voice Receptionist</strong><small>Sunrise Dental Clinic</small></span>
+            <img className="brand-mark" width="36" height="36" src={`${import.meta.env.BASE_URL}reception.svg`} alt="" />
+            <span><strong>Reception</strong><small>Sunrise Dental Clinic</small></span>
           </Link>
-        </div>
-        <div className="desk-top">
-          <div className="desk-date"><span>{date}</span>{zone && <span className="desk-zone data-text" title={zone}>{tzAbbreviation(zone)}</span>}</div>
-          {health?.demo_mode && <span className="mobile-demo muted">Demo</span>}
-          <Button variant="outline" size="sm" onClick={() => setTheme(themeTarget)} aria-label={`Switch to ${themeTarget} theme`}>
+          <Button className="mobile-theme" variant="outline" size="sm" onClick={() => setTheme(themeTarget)} aria-label={`Switch to ${themeTarget} theme`}>
             {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-            <span>{themeTarget === 'dark' ? 'Dark' : 'Light'}</span>
           </Button>
         </div>
-      </header>
-
-      <aside className="desk-rail">
         <nav aria-label="Primary" className="desk-nav">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} end>
@@ -115,15 +105,25 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
-        <div className="desk-rail-foot">
-          <div role="status"><ConnectionStatus health={connectionError ? null : health} checking={checking} /></div>
+        <div className="desk-rail-foot" role="status">
+          <ConnectionStatus health={connectionError ? null : health} checking={checking} />
           {health?.demo_mode && <p>Demo mode</p>}
         </div>
       </aside>
 
-      <main className="desk-main" id="main-content" ref={main} tabIndex={-1}>
-        <Outlet context={desk} />
-      </main>
+      <div className="desk-body">
+        <header className="desk-top">
+          <div className="desk-date"><CalendarDays size={16} aria-hidden="true" /><span>{date}</span>{zone && <span className="desk-zone data-text" title={zone}>{tzAbbreviation(zone)}</span>}</div>
+          {health?.demo_mode && <span className="mobile-demo muted">Demo</span>}
+          <Button className="desktop-theme" variant="outline" size="sm" onClick={() => setTheme(themeTarget)} aria-label={`Switch to ${themeTarget} theme`}>
+            {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
+            <span>{themeTarget === 'dark' ? 'Dark' : 'Light'}</span>
+          </Button>
+        </header>
+        <main className="desk-main" id="main-content" ref={main} tabIndex={-1}>
+          <div key={pathname} className={hasNavigated ? 'desk-view view-arriving' : 'desk-view'}><Outlet context={desk} /></div>
+        </main>
+      </div>
     </div>
   )
 }

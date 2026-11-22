@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Check, Copy, MessageSquare, PhoneOff, Play, Send } from 'lucide-react'
+import { AudioLines, Check, Copy, MessageSquare, PhoneOff, Play, Send } from 'lucide-react'
 import * as z from 'zod/mini'
-import { EmptyState, PageHeading, SectionHeading } from '../components/Desk'
+import { ActionLink, EmptyState, PageHeading, SectionHeading } from '../components/Desk'
+import { useDesk } from '../components/Layout'
 import { Transcript, type Turn } from '../components/Transcript'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Toasts } from '../components/ui/toast'
-import { api, type EndCallResult } from '../lib/api'
+import { api, ApiError, type EndCallResult } from '../lib/api'
 import { useToast } from '../lib/useToast'
 import { recordLabel } from '../lib/utils'
 
-const CALLER = '+919573719115'
+const CALLER = '+12025550101'
 const STEPS = ['Greet', 'Understand', 'Answer or book', 'Confirm', 'Log call']
 const STATE_STEP: Record<string, number> = { greet: 0, understand: 1, book: 2, cancel: 2, message: 2, faq: 2, confirm: 3, escalate: 3 }
 const callerLine = z.string().check(
@@ -19,12 +20,12 @@ const callerLine = z.string().check(
   z.refine((text) => [...text].length <= 2000, 'Use 2,000 characters or fewer.'),
 )
 
-const scenarios: { label: string; description: string; turns: string[]; service?: string }[] = [
+const scenarios: { label: string; description: string; turns: string[]; booking?: boolean }[] = [
   {
     label: 'Booking',
-    description: 'Book a cleaning, check the clinic hours and ask about the price.',
-    turns: ["Hi, I'd like to book a teeth cleaning appointment", 'What are your opening hours?', 'How much does cleaning cost?'],
-    service: 'Teeth cleaning',
+    description: 'Ask for a cleaning, choose an offered time and give the patient’s name.',
+    turns: ["Hi, I'd like to book a teeth cleaning appointment"],
+    booking: true,
   },
   {
     label: 'Emergency',
@@ -40,6 +41,7 @@ const scenarios: { label: string; description: string; turns: string[]; service?
 
 type Mode = 'scripted' | 'interactive'
 type Session = {
+  id: string
   mode: Mode
   started: boolean
   stopping: boolean
@@ -48,18 +50,15 @@ type Session = {
   closing?: Promise<EndCallResult | null>
 }
 
-// The API identifies the simulator by a shared caller number. A session
-// opened on this page must finish before the same tab can reuse the caller.
-let pendingSession: Session | null = null
-
 function closeSession(session: Session) {
   session.stopping = true
   session.closing ??= (async () => {
     try {
       await session.task
-      return session.started ? await api.endCall(CALLER) : null
-    } finally {
-      if (pendingSession === session) pendingSession = null
+      return session.started ? await api.endSimulation(session.id) : null
+    } catch (error) {
+      session.closing = undefined
+      throw error
     }
   })()
   return session.closing
@@ -78,24 +77,26 @@ function smsSegments(text: string) {
 }
 
 export default function LiveCall() {
-  const [phase, setPhase] = useState<'idle' | 'starting' | 'running' | 'ending'>('idle')
+  const { health } = useDesk()
+  const practiceUnavailable = health?.demo_mode === false
+  const [phase, setPhase] = useState<'idle' | 'starting' | 'running' | 'ending' | 'close-error'>('idle')
   const [mode, setMode] = useState<Mode>('scripted')
   const [typing, setTyping] = useState(false)
   const [messages, setMessages] = useState<Turn[]>([])
   const [step, setStep] = useState(0)
+  const [slots, setSlots] = useState<string[]>([])
   const [scenario, setScenario] = useState(0)
   const [customText, setCustomText] = useState('')
   const [fieldError, setFieldError] = useState('')
   const [elapsed, setElapsed] = useState(0)
   const [result, setResult] = useState<EndCallResult | null>(null)
-  const [smsState, setSmsState] = useState<'idle' | 'sending' | 'sent' | 'recorded' | 'error'>('idle')
-  const [smsNote, setSmsNote] = useState('')
   const [copied, setCopied] = useState(false)
   const { toasts, push, dismiss } = useToast()
   const transcript = useRef<HTMLDivElement>(null)
   const composer = useRef<HTMLInputElement>(null)
   const sessionRef = useRef<Session | null>(null)
   const active = phase !== 'idle'
+  const counting = active && phase !== 'close-error'
 
   useEffect(() => () => {
     const session = sessionRef.current
@@ -104,11 +105,11 @@ export default function LiveCall() {
   }, [])
 
   useEffect(() => {
-    if (!active) return
+    if (!counting) return
     const started = Date.now()
     const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
     return () => window.clearInterval(timer)
-  }, [active])
+  }, [counting])
 
   useEffect(() => {
     if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight
@@ -126,11 +127,10 @@ export default function LiveCall() {
     setResult(null)
     setMessages([])
     setStep(0)
+    setSlots([])
     setElapsed(0)
     setCustomText('')
     setFieldError('')
-    setSmsState('idle')
-    setSmsNote('')
     setCopied(false)
   }
 
@@ -138,10 +138,11 @@ export default function LiveCall() {
     setMessages((turns) => [...turns, { speaker: 'Caller', text }])
     setTyping(true)
     try {
-      const turn = await api.callTurn(CALLER, text)
+      const turn = await api.simulationTurn(session.id, text)
       if (sessionRef.current === session) {
         setMessages((turns) => [...turns, { speaker: 'Agent', text: turn.reply, intent: turn.intent }])
         setStep(STATE_STEP[turn.state] ?? 2)
+        setSlots(turn.slots)
       }
       return turn
     } finally {
@@ -154,43 +155,45 @@ export default function LiveCall() {
     setPhase('ending')
     try {
       const logged = await closeSession(session)
-      if (!logged || sessionRef.current !== session) return
-      if (!logged.ok) throw new Error(logged.message || 'The API could not find the active call.')
-      setStep(STEPS.length)
+      if (sessionRef.current !== session) return
+      setStep(logged ? STEPS.length : 0)
+      setSlots([])
       setResult(logged)
-      push({
+      sessionRef.current = null
+      setPhase('idle')
+      if (logged) push({
         title: logged.escalated ? 'Call logged and escalated' : 'Call logged',
         desc: logged.follow_up_sms ? 'The confirmation text is ready to review.' : undefined,
         kind: logged.escalated ? 'info' : 'success',
       })
     } catch (error) {
-      if (sessionRef.current === session) fail('Could not end the call', error)
-    } finally {
       if (sessionRef.current === session) {
-        sessionRef.current = null
-        setPhase('idle')
-        setTyping(false)
+        fail('Could not end the call', error)
+        if (error instanceof ApiError && error.status === 404) {
+          sessionRef.current = null
+          setPhase('idle')
+        } else {
+          setPhase('close-error')
+        }
       }
+    } finally {
+      if (sessionRef.current === session || sessionRef.current === null) setTyping(false)
     }
   }
 
   function start(nextMode: Mode) {
-    if (pendingSession) {
-      push({ title: 'A call is still closing', desc: 'Try again in a moment.', kind: 'info' })
-      return
-    }
+    if (sessionRef.current || practiceUnavailable) return
 
     clear()
     setMode(nextMode)
     setPhase('starting')
-    const session: Session = { mode: nextMode, started: false, stopping: false, busy: false, task: Promise.resolve() }
+    const session: Session = { id: crypto.randomUUID(), mode: nextMode, started: false, stopping: false, busy: false, task: Promise.resolve() }
     const selected = scenarios[scenario]
-    pendingSession = session
     sessionRef.current = session
 
     session.task = (async () => {
       try {
-        const greeting = await api.startCall(CALLER)
+        const greeting = await api.startSimulation(session.id)
         session.started = true
         if (session.stopping) return
         setMessages([{ speaker: 'Agent', text: greeting.reply }])
@@ -198,21 +201,23 @@ export default function LiveCall() {
         setPhase('running')
         if (session.mode === 'interactive') return
 
+        let offered: string[] = []
         for (const text of selected.turns) {
           await waitForTurn()
           if (session.stopping) return
           const turn = await sendTurn(session, text)
+          offered = turn.slots
           if (turn.state === 'escalate') return
         }
 
-        if (!session.stopping && selected.service) {
-          const slots = await api.slots(selected.service)
-          if (!session.stopping && slots.available.length) {
-            const booking = await api.bookAppointment('Demo Patient', selected.service, slots.available[0], CALLER)
-            if (sessionRef.current === session) {
-              setMessages((turns) => [...turns, { speaker: 'Agent', text: booking.message }])
-            }
-          }
+        if (selected.booking && offered.length) {
+          await waitForTurn()
+          if (session.stopping) return
+          const choice = await sendTurn(session, offered[0])
+          if (choice.slots.length) return
+          await waitForTurn()
+          if (session.stopping) return
+          await sendTurn(session, 'My name is Demo Patient')
         }
       } catch (error) {
         if (sessionRef.current === session) fail(session.started ? 'The call was interrupted' : 'Could not start the call', error)
@@ -233,17 +238,26 @@ export default function LiveCall() {
       setFieldError(line.error.issues[0].message)
       return
     }
+    submitTurn(session, line.data)
+  }
+
+  function submitTurn(session: Session, text: string) {
+    if (session.stopping || session.busy) return
     session.busy = true
     setCustomText('')
     setFieldError('')
-    session.task = sendTurn(session, line.data)
+    session.task = sendTurn(session, text)
       .then((turn) => {
-        if (turn.state === 'escalate' && sessionRef.current === session) {
-          push({ title: 'Call escalated', desc: 'The receptionist handed the call to a person.', kind: 'info' })
+        if (turn.state === 'escalate' && sessionRef.current === session) session.stopping = true
+      })
+      .catch((error: unknown) => {
+        if (sessionRef.current === session) {
+          setCustomText(text)
+          fail('Could not send the caller’s line', error)
         }
       })
-      .catch((error: unknown) => { if (sessionRef.current === session) fail('Could not send the caller’s line', error) })
       .finally(() => { session.busy = false })
+    void session.task.then(() => { if (session.stopping) void finish(session) })
   }
 
   async function copySms(text: string) {
@@ -255,46 +269,34 @@ export default function LiveCall() {
     }
   }
 
-  async function sendSms(text: string) {
-    setSmsState('sending')
-    setSmsNote('')
-    try {
-      const response = await api.notifySms(result?.caller || CALLER, text)
-      if (!response.sent && response.error) throw new Error(response.error)
-      setSmsState(response.sent ? 'sent' : 'recorded')
-      setSmsNote(response.sent ? 'Confirmation text sent.' : 'Preview only. No text was sent.')
-    } catch (error) {
-      setSmsState('error')
-      setSmsNote(error instanceof Error ? error.message : 'Could not send the text.')
-    }
-  }
-
   const sms = result?.follow_up_sms
-  const smsBusy = smsState === 'sending'
-  const smsLabel = { idle: 'Send SMS', sending: 'Sending…', sent: 'Sent', recorded: 'Preview only', error: 'Retry SMS' }[smsState]
+  const status = { idle: result ? 'Call ended' : 'Ready', starting: 'Connecting', running: 'On the line', ending: 'Ending call', 'close-error': 'Call log pending' }[phase]
 
   return (
     <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <PageHeading title="Live call" description="Simulate a call with the receptionist. No phone call is placed." />
+      <PageHeading title="Live call" description="Run a practice call or type your own caller messages." />
       <div className="live-grid">
-        <div className="live-controls">
+        <div className="live-controls desk-sheet">
           <section className="ruled-section">
             <SectionHeading title="Scenario" />
-            <fieldset className="scenario-list" disabled={active}>
+            <fieldset className="scenario-list" disabled={active || practiceUnavailable}>
               <legend className="sr-only">Choose a scenario</legend>
               {scenarios.map(({ label }, index) => (
                 <label key={label}><input type="radio" name="scenario" checked={scenario === index} onChange={() => setScenario(index)} />{label}</label>
               ))}
             </fieldset>
-            <p className="muted scenario-description">{scenarios[scenario].description}</p>
+            <p className="muted scenario-description">{practiceUnavailable ? 'Practice calls are available in demo mode.' : scenarios[scenario].description}</p>
             <div className="live-actions">
-              <Button onClick={() => start('scripted')} disabled={active || smsBusy}><Play size={16} aria-hidden="true" />Run scenario</Button>
-              <Button variant="outline" onClick={() => start('interactive')} disabled={active || smsBusy}><MessageSquare size={16} aria-hidden="true" />Talk to the agent</Button>
+              <Button onClick={() => start('scripted')} disabled={active || practiceUnavailable}><Play size={16} aria-hidden="true" />Run scenario</Button>
+              <Button variant="outline" onClick={() => start('interactive')} disabled={active || practiceUnavailable}><MessageSquare size={16} aria-hidden="true" />Talk to the agent</Button>
             </div>
           </section>
           <section className="ruled-section progress-section">
             <SectionHeading title="Call progress" />
+            <div className="call-progress-track" role="progressbar" aria-label="Call progress" aria-valuenow={step} aria-valuemin={0} aria-valuemax={STEPS.length}>
+              <span style={{ '--chart-value': step / STEPS.length } as React.CSSProperties} />
+            </div>
             <ol className="progress-list">
               {STEPS.map((label, index) => (
                 <li key={label} aria-current={active && step === index ? 'step' : undefined}>
@@ -309,10 +311,10 @@ export default function LiveCall() {
         <div className="live-conversation">
           <section className="desk-sheet" aria-labelledby="conversation">
             <header className="live-heading">
-              <div><h2 id="conversation">Conversation</h2><p className="muted">{CALLER}</p></div>
-              <div className="live-state">
-                <Badge dot tone={phase === 'running' ? 'success' : 'default'}>{phase === 'starting' ? 'Connecting' : phase === 'ending' ? 'Ending call' : active ? 'On the line' : result ? 'Call ended' : 'Ready'}</Badge>
-                {(active || result) && <span className="data-text muted" aria-label="Elapsed time">{elapsedLabel(elapsed)}</span>}
+              <div className="line-identity"><div className={`line-signal${typing ? ' signal-active' : ''}`} aria-hidden="true"><AudioLines size={22} /></div><div><h2 id="conversation">Conversation</h2><p>Practice line · {CALLER}</p></div></div>
+              <div className="live-state" role="status">
+                <Badge dot tone={phase === 'running' ? 'success' : 'default'}>{status}</Badge>
+                {(active || result) && <span className="data-text" aria-label="Elapsed time" aria-live="off">{elapsedLabel(elapsed)}</span>}
               </div>
             </header>
 
@@ -325,6 +327,10 @@ export default function LiveCall() {
 
             {active && mode === 'interactive' && (
               <form className="caller-form" onSubmit={submitCallerLine} noValidate>
+                {slots.length > 0 && <fieldset className="offered-slots" disabled={phase !== 'running' || typing}>
+                  <legend>Offered times</legend>
+                  {slots.map((slot) => <Button key={slot} variant="outline" size="sm" onClick={() => { if (sessionRef.current) submitTurn(sessionRef.current, slot) }}>{slot}</Button>)}
+                </fieldset>}
                 <label htmlFor="caller-line" className="field-label">Caller message</label>
                 <div>
                   <input id="caller-line" ref={composer} value={customText} onChange={(event) => { setCustomText(event.target.value); setFieldError('') }}
@@ -337,15 +343,15 @@ export default function LiveCall() {
             {(active || messages.length > 0 || result) && (
               <footer className="conversation-footer">
                 {active ? (
-                  <Button variant="outline" disabled={phase === 'ending'} onClick={() => { if (sessionRef.current) void finish(sessionRef.current) }}><PhoneOff size={16} aria-hidden="true" />End call</Button>
-                ) : <Button variant="outline" disabled={smsBusy} onClick={clear}>Clear conversation</Button>}
+                  <Button variant="outline" disabled={phase === 'ending'} onClick={() => { if (sessionRef.current) void finish(sessionRef.current) }}><PhoneOff size={16} aria-hidden="true" />{phase === 'close-error' ? 'Retry call log' : 'End call'}</Button>
+                ) : <Button variant="outline" onClick={clear}>Clear conversation</Button>}
               </footer>
             )}
           </section>
 
           {result && (
             <section className="ruled-section result-section turn-enter">
-              <SectionHeading title="Call summary" />
+              <SectionHeading title="Call summary"><ActionLink to={`/calls?call=${result.call_id}`}>Open in call log</ActionLink></SectionHeading>
               <div className="call-flags">
                 {result.outcome && <Badge tone={result.escalated ? 'danger' : 'default'}>{recordLabel(result.outcome)}</Badge>}
                 {result.urgency && <Badge tone={result.urgency === 'high' ? 'danger' : result.urgency === 'medium' ? 'warning' : 'default'}>{recordLabel(result.urgency)} urgency</Badge>}
@@ -361,10 +367,8 @@ export default function LiveCall() {
                   <p className="muted">{[...sms].length} characters · {smsSegments(sms)} estimated segment{smsSegments(sms) === 1 ? '' : 's'}</p>
                   <div className="sms-actions">
                     <Button variant="outline" onClick={() => void copySms(sms)}><Copy size={16} aria-hidden="true" />{copied ? 'Copied' : 'Copy text'}</Button>
-                    <Button disabled={smsBusy || smsState === 'sent' || smsState === 'recorded'} onClick={() => void sendSms(sms)}><Send size={16} aria-hidden="true" />{smsLabel}</Button>
                   </div>
-                  <p className="muted">This sends the text when SMS delivery is configured. Otherwise, it returns a preview.</p>
-                  {smsNote && <p className={smsState === 'error' ? 'field-error' : 'muted'} role={smsState === 'error' ? 'alert' : 'status'}>{smsNote}</p>}
+                  <p className="muted">Practice calls generate a draft only.</p>
                 </section>
               )}
             </section>

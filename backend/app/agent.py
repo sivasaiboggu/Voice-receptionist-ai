@@ -195,8 +195,10 @@ def extract_service(text):
 class VoiceAgent:
     """One call = one agent instance, with a transcript and a state."""
 
-    def __init__(self, caller="+91 00000 00000"):
+    def __init__(self, caller="+91 00000 00000", *, practice=False):
         self.caller = caller
+        self.practice = practice
+        self.started_at = booking.now_utc().isoformat()
         self.transcript = []
         self.state = "greet"
         self.intent = None
@@ -208,6 +210,7 @@ class VoiceAgent:
         self.pending_service = None  # a service named before a slot was settled
         self.pending_cancel = None  # a slot awaiting a name check before cancelling
         self.follow_up_sms = None
+        self.offered_slots = []
         init_db()
         booking.seed_slots()
 
@@ -226,6 +229,7 @@ class VoiceAgent:
 
     def handle(self, caller_text):
         """One caller turn → agent reply. Returns the agent's spoken reply."""
+        self.offered_slots = []
         text = "" if caller_text is None else str(caller_text)
         self.say("Caller", text)
         if not text.strip():
@@ -236,8 +240,23 @@ class VoiceAgent:
                 "I can book an appointment, answer questions, or connect you to a person.",
             )
 
-        # Multi-turn continuations, checked before fresh intent classification:
-        # the caller is answering our follow-up question, not starting over.
+        intent = classify_intent(text)
+        if intent in ("emergency", "human"):
+            self.intent = intent
+            self.escalated = True
+            self.state = "escalate"
+            self.pending = self.pending_name = self.pending_service = self.pending_slot = self.pending_cancel = None
+            if intent == "emergency":
+                self.outcome = "escalated-emergency"
+                return self.say(
+                    "Agent", "I'm sorry to hear that — urgent cases are seen the same day. "
+                    "I'm connecting you to the clinic now, and I've flagged this as urgent. "
+                    "Please stay on the line.",
+                )
+            self.outcome = "escalated-human-request"
+            return self.say("Agent", "Of course — I'll connect you to a member of our team now.")
+
+        # A turn can answer a question left open by the previous turn.
         slot = extract_slot(text)
         if self.state == "cancel" and self.pending_cancel:
             # The caller is answering "your name, so I cancel the right
@@ -245,7 +264,7 @@ class VoiceAgent:
             # cannot cancel someone else's appointment by naming a time);
             # a different time switches the slot; anything else drops the
             # pending cancel and is handled as a fresh turn.
-            name = extract_name(text) if classify_intent(text) in ("faq", "cancel") else None
+            name = extract_name(text) if intent in ("faq", "cancel") else None
             if name:
                 slot_to_cancel = self.pending_cancel
                 self.intent = "cancel"
@@ -278,14 +297,14 @@ class VoiceAgent:
                 self.state = "confirm"
                 self.outcome = "answered"
                 return self.say("Agent", msg + " Could you check the date and time and try again?")
-            if slot and slot != self.pending_cancel:
+            if slot and slot != self.pending_cancel and intent in ("faq", "cancel"):
                 self.pending_cancel = slot
                 self.intent = "cancel"
                 return self.say(
                     "Agent",
                     f"Thanks — and your name, so I cancel the appointment on {slot}?",
                 )
-            if classify_intent(text) in ("book", "hours", "price", "services", "emergency", "human", "message"):
+            if intent in ("book", "hours", "price", "services", "message"):
                 self.pending_cancel = None  # caller moved on; fall through below
             else:
                 self.intent = "cancel"
@@ -294,7 +313,7 @@ class VoiceAgent:
                     "Sorry — I need your name to cancel the appointment. Could you tell me your name?",
                 )
         if self.state == "cancel" and slot:
-            if classify_intent(text) in ("cancel", "faq"):
+            if intent in ("cancel", "faq"):
                 # A bare time ("2026-11-23 10:00") or "cancel ... on
                 # <time>": start the name-checked cancel below.
                 self.intent = "cancel"
@@ -307,7 +326,7 @@ class VoiceAgent:
             return self.take_message(text)
         if self.pending:
             name = extract_name(text)
-            if name and classify_intent(text) == "faq":
+            if name and intent == "faq":
                 self.intent = "book"
                 service, pending_slot = self.pending
                 self.pending = None
@@ -320,25 +339,12 @@ class VoiceAgent:
             # through to offering the next five slots, and a bare name
             # fell through to the RAG "I don't have that" fallback.
             service = extract_service(text)
-            if service and not slot:
+            if service and not slot and intent in ("book", "services"):
                 slot0 = self.pending_slot
-                self.pending_slot = None
                 self.intent = "book"
-                self.state = "book"
-                if self.pending_name:
-                    # The caller already gave their name last turn —
-                    # book now instead of asking for it again.
-                    name = self.pending_name
-                    self.pending_name = None
-                    _ok, msg = self.book(name, service, slot0)
-                    return msg  # book() already added the reply to the transcript
-                self.pending = (service, slot0)
-                return self.say(
-                    "Agent",
-                    f"{service} on {slot0} is available — may I have your name to confirm the booking?",
-                )
+                return self._handle_book(f"{service} {slot0}")
             name = extract_name(text)
-            if name and classify_intent(text) == "faq":
+            if name and intent == "faq":
                 self.pending_name = name
                 self.intent = "book"
                 return self.say(
@@ -347,7 +353,7 @@ class VoiceAgent:
                 )
             if slot and slot != self.pending_slot:
                 self.pending_slot = None  # a different time: start over below
-            elif classify_intent(text) != "book":
+            elif intent != "book":
                 self.pending_slot = None  # caller moved on to something else
         if self.state == "book" and not self.pending and not self.pending_slot:
             # The caller is answering "Which time works for you, and
@@ -360,10 +366,10 @@ class VoiceAgent:
             # which asks for whichever half is still missing. Anything
             # else (a price question, an emergency, a cancel) is a
             # fresh turn and falls through to normal dispatch below.
-            if slot or (classify_intent(text) == "faq" and extract_name(text)):
+            if intent == "faq" and (slot or extract_name(text)):
                 self.intent = "book"
                 return self._handle_book(text)
-        if slot and classify_intent(text) in ("book", "faq") and not self.pending and not self.pending_slot:
+        if slot and intent in ("book", "faq") and not self.pending and not self.pending_slot:
             # A fresh turn naming a time ("Is 2026-11-23 10:00
             # free?") is a slot question, not a FAQ — check the slot
             # instead of answering from the knowledge base (which
@@ -373,30 +379,17 @@ class VoiceAgent:
             self.intent = "book"
             return self._handle_book(text)
 
-        self.intent = classify_intent(text)
+        self.intent = intent
         if self.intent != "book":
             # The caller moved on from booking (a price question, an
             # emergency, a cancel): a name or service remembered for
             # that booking must not be reused silently on a later one.
             self.pending_name = None
             self.pending_service = None
+            self.pending = None
+            self.pending_slot = None
 
-        if self.intent == "emergency":
-            self.escalated = True
-            self.outcome = "escalated-emergency"
-            self.state = "escalate"
-            reply = self.say(
-                "Agent",
-                "I'm sorry to hear that — urgent cases are seen the same day. "
-                "I'm connecting you to the clinic now, and I've flagged this as urgent. "
-                "Please stay on the line.",
-            )
-        elif self.intent == "human":
-            self.escalated = True
-            self.outcome = "escalated-human-request"
-            self.state = "escalate"
-            reply = self.say("Agent", "Of course — I'll connect you to a member of our team now.")
-        elif self.intent == "book":
+        if self.intent == "book":
             reply = self._handle_book(text)
         elif self.intent == "cancel":
             self.state = "cancel"
@@ -409,12 +402,12 @@ class VoiceAgent:
             reply = self.say("Agent", "Of course — please tell me your message and the clinic will call you back today.")
         elif self.intent in ("hours", "price", "services", "faq"):
             result = rag.answer(text)
-            self.outcome = "answered"
+            self.outcome = self.outcome or "answered"
             self.state = "confirm"
             suffix = f" (Source: {', '.join(result['sources'])})" if result["sources"] else ""
             reply = self.say("Agent", result["answer"] + suffix + " Is there anything else I can help with?")
         else:
-            self.outcome = "answered"
+            self.outcome = self.outcome or "answered"
             reply = self.say(
                 "Agent",
                 "I can help with bookings, opening hours, prices and services — "
@@ -453,6 +446,10 @@ class VoiceAgent:
         # plain statement, so "I am in terrible pain" never lands here.
         name = extract_name(text) or self.pending_name
         if slot:
+            self.pending = None
+            self.pending_slot = None
+            if name:
+                self.pending_name = name
             slot_dt = booking.parse_slot(slot)
             if slot_dt is not None and slot_dt < booking.now_clinic():
                 return self._offer_alternatives(
@@ -511,7 +508,7 @@ class VoiceAgent:
                 "Agent",
                 f"{slot} is available — which service would you like, and may I have your name?",
             )
-        slots = booking.available_slots(limit=5)
+        self.offered_slots = slots = booking.available_slots(service=service, limit=5)
         if not slots:
             self.outcome = "answered"
             return self.say(
@@ -537,7 +534,7 @@ class VoiceAgent:
     def _offer_alternatives(self, prefix):
         """Reply with `prefix` + the next free times, or an honest
         no-availability message when the list is empty."""
-        slots = booking.available_slots(limit=5)
+        self.offered_slots = slots = booking.available_slots(service=self.pending_service, limit=5)
         if not slots:
             self.outcome = "answered"
             return self.say(
@@ -580,7 +577,7 @@ class VoiceAgent:
         return ok, msg
 
     def book(self, patient_name, service, slot):
-        ok, msg = booking.book(patient_name, self.caller, service, slot)
+        ok, msg = booking.book(patient_name, self.caller, service, slot, confirmation_expected=not self.practice)
         if ok:
             self.outcome = "booked"
             self.state = "confirm"
@@ -596,6 +593,10 @@ class VoiceAgent:
             # Never leave a stale confirmation draft from an earlier booking.
             self.follow_up_sms = None
             self.state = "book"
+            self.pending_name = patient_name if patient_name else None
+            self.pending_service = booking.normalise_service(service)
+            msg = self._offer_alternatives(msg + " Our next available times are: ")
+            return ok, msg
         self.say("Agent", msg)
         return ok, msg
 
@@ -643,20 +644,22 @@ class VoiceAgent:
         transcript = "\n".join(self.transcript)
         summary = summarise(transcript)
         sentiment, urgency = self._call_signals()
+        outcome = self.outcome or "answered"
         with db() as conn:
-            conn.execute(
+            row = conn.execute(
                 """INSERT INTO calls (caller, started_at, transcript, summary,
                    sentiment, urgency, outcome, escalated)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?) RETURNING id""",
                 (
-                    self.caller, booking.now_utc().isoformat(), transcript, summary,
+                    self.caller, self.started_at, transcript, summary,
                     sentiment, urgency,
-                    self.outcome or "answered", 1 if self.escalated else 0,
+                    outcome, 1 if self.escalated else 0,
                 ),
-            )
+            ).fetchone()
         return {
+            "call_id": row["id"],
             "caller": self.caller,
-            "outcome": self.outcome,
+            "outcome": outcome,
             "escalated": self.escalated,
             "sentiment": sentiment,
             "urgency": urgency,
@@ -668,23 +671,22 @@ class VoiceAgent:
 
 def run_demo_call(caller="+919573719115", turns=None):
     """Run a full simulated call end-to-end, no phone keys needed."""
+    scripted = not turns
     turns = turns or [
         "Hi, I'd like to book a teeth cleaning appointment",
-        "What are your opening hours?",
-        "How much does cleaning cost?",
     ]
     agent = VoiceAgent(caller=caller)
     out = [agent.greet()]
     for t in turns:
         out.append(agent.handle(t))
-    # Book the first available slot as part of the demo — unless the call
-    # escalated (an emergency/human handoff must never auto-book). The
-    # slot must fit the service: the first free slot overall can be
-    # 19:30, which a 45-minute cleaning would run past closing.
-    slots = booking.available_slots(service="Teeth cleaning", limit=1)
-    if slots and not agent.escalated:
-        ok, msg = agent.book("Demo Patient", "Teeth cleaning", slots[0])
-        out.append(msg)
+        if agent.escalated:
+            break
+    if scripted and agent.offered_slots:
+        out.append(agent.handle(agent.offered_slots[0]))
+        out.append(agent.handle("My name is Demo Patient"))
+    if scripted:
+        out.append(agent.handle("What are your opening hours?"))
+        out.append(agent.handle("How much does cleaning cost?"))
     result = agent.end_call()
     result["replies"] = out
     return result

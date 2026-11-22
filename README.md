@@ -40,13 +40,13 @@ No keys are hardcoded. Everything paid is optional and has a free/mock fallback.
 ## Dashboard
 
 - **Overview** shows the clinic schedule, call totals and recent outcomes.
-- **Calls** pairs a searchable register with the selected call’s transcript.
-- **Appointments** provides a chronological list, a 14-day calendar and cancellation.
-- **Live call** runs scripted scenarios or typed caller turns with the real API.
+- **Calls** pairs searchable call history with the selected transcript.
+- **Appointments** opens to the clinic calendar and supports booking and cancellation.
+- **Live call** runs scripted or typed practice calls in demo mode, with selectable times and a link to the stored call.
 - **Settings** stores appearance in the browser and reports the clinic connection.
 
-The [redesign notes](docs/reception-desk-redesign.md) cover the ruled
-register, light and dark OKLCH tokens, measured contrast and local review.
+The [v2 design and verification notes](docs/deep-green-desk.md) cover the deep green desk,
+light and dark OKLCH tokens, measured contrast and local review.
 
 ## Architecture
 

@@ -136,3 +136,30 @@ def test_name_is_not_reused_after_the_caller_moves_on():
     reply = ag.handle(f"Book teeth cleaning on {slot}")
     assert "your name" in reply, reply  # asked again, not auto-booked
     assert "Booked:" not in reply
+
+
+def test_handoff_interrupts_pending_message():
+    ag = va.VoiceAgent(caller="+12025550106")
+    ag.handle("Can I leave a message?")
+    assert ag.state == "message"
+    reply = ag.handle("I am in terrible pain")
+    assert ag.state == "escalate" and ag.outcome == "escalated-emergency", reply
+
+
+def test_unavailable_pending_slot_recovers_through_conversation():
+    ag = _offered_agent()
+    slot = ag.offered_slots[0]
+    ag.handle(slot)
+    assert booking.book("Competing Patient", "+12025550109", "Teeth cleaning", slot)[0]
+    reply = ag.handle("My name is Rahul")
+    assert ag.state == "book" and ag.offered_slots and slot not in ag.offered_slots, reply
+    reply = ag.handle(ag.offered_slots[0])
+    assert "Booked:" in reply and "Rahul" in reply
+
+
+def test_handoff_with_a_time_interrupts_pending_booking():
+    ag = _offered_agent()
+    slot = ag.offered_slots[0]
+    reply = ag.handle(f"I am in terrible pain, can I come in at {slot}?")
+    assert ag.state == "escalate" and ag.outcome == "escalated-emergency", reply
+    assert ag.offered_slots == []

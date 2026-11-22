@@ -3,8 +3,8 @@
   "short_name": "Receptionist",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#f7f4eb",
-  "theme_color": "#f7f4eb",
+  "background_color": "#f4efe4",
+  "theme_color": "#132b23",
   "icons": [
     { "src": "reception.svg", "sizes": "any", "type": "image/svg+xml" }
   ]

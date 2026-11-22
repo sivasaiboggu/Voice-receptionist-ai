@@ -17,13 +17,15 @@ export default function Settings() {
 
       <div className="settings-rows">
         <section className="settings-row">
-          <SectionHeading title="Appearance" note="Saved in this browser." />
+          <SectionHeading title="Appearance" note="Choose how the front desk looks in this browser." />
           <fieldset className="appearance-options">
             <legend className="sr-only">Color theme</legend>
             {appearances.map(({ value, label, icon: Icon }) => (
               <label key={value}>
-                <input type="radio" name="appearance" value={value} checked={theme === value} onChange={() => setTheme(value)} />
-                <Icon size={18} aria-hidden="true" />{label}
+                <span className={`theme-preview preview-${value}`} aria-hidden="true"><span /><span /><span /></span>
+                <span className="theme-label"><input type="radio" name="appearance" value={value} checked={theme === value} onChange={() => setTheme(value)} />
+                  {label}<Icon size={17} aria-hidden="true" />
+                </span>
               </label>
             ))}
           </fieldset>
