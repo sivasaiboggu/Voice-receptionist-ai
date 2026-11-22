@@ -163,9 +163,10 @@ def test_agent_slot_then_name_asks_service_not_rag_fallback():
     reply = ag.handle("Asha")
     assert "which service" in reply
     assert "don't have that information" not in reply
+    # The name is remembered from the last turn: naming the service
+    # books at once instead of asking for the name a second time.
     reply = ag.handle("Teeth cleaning")
-    assert "your name" in reply
-    ag.handle("Asha")
+    assert "Booked:" in reply and "Asha" in reply
     assert ag.outcome == "booked"
 
 

@@ -180,7 +180,7 @@ export default function Appointments() {
                     {dayAppts.slice(0, 3).map((a) => (
                       <div key={a.id} className={`flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${a.status === 'booked' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 text-red-700 line-through dark:text-red-400'}`}>
                         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.status === 'booked' ? 'bg-emerald-500' : 'bg-red-400'}`} />
-                        {a.slot.slice(11)} {a.patient_name}
+                        <span className="font-mono">{a.slot.slice(11)}</span> {a.patient_name}
                       </div>
                     ))}
                     {dayAppts.length > 3 && <span className="text-[11px] text-muted-foreground">+{dayAppts.length - 3} more</span>}
@@ -204,7 +204,7 @@ export default function Appointments() {
                   <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-3 shadow-soft transition-colors hover:bg-accent/40">
                     <div>
                       <p className="text-sm font-medium">{a.patient_name} · {a.service}</p>
-                      <p className="text-xs text-muted-foreground">{dayLabel(a.slot)} {a.slot.slice(11)}{a.phone ? ` · ${a.phone}` : ''}</p>
+                      <p className="text-xs text-muted-foreground">{dayLabel(a.slot)} <span className="font-mono">{a.slot.slice(11)}</span>{a.phone ? <> · <span className="font-mono">{a.phone}</span></> : ''}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge tone={a.status === 'booked' ? 'success' : 'danger'}>{a.status}</Badge>
@@ -242,7 +242,7 @@ export default function Appointments() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">{a.service} · {dayLabel(a.slot)} {a.slot.slice(11)}{a.phone ? ` · ${a.phone}` : ''}</p>
+                <p className="text-sm text-muted-foreground">{a.service} · {dayLabel(a.slot)} <span className="font-mono">{a.slot.slice(11)}</span>{a.phone ? <> · <span className="font-mono">{a.phone}</span></> : ''}</p>
                 {a.status === 'booked' && (
                   confirming === a.id ? (
                     <div className="flex flex-wrap items-center gap-2">

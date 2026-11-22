@@ -56,17 +56,43 @@ def extract_name(text):
     Returns None when the text is not a name. Only a plain statement
     can carry one: a request ("book ..."), a question ("what time ...")
     or an emergency ("I am in terrible pain" — which matches the
-    "I am ..." shape) is never taken as a name."""
+    "I am ..." shape) is never taken as a name. Neither is a bare
+    acknowledgement ("Yes" after "may I have your name?" used to book
+    the patient as "Yes") nor a state ("I am fine", "I'm sorry",
+    "I am sick") — the word after "I am" is not always a name.
+    """
     t = (text or "").strip()
     if not t:
+        return None
+    if t.lower().rstrip(".!?") in _ACKNOWLEDGEMENTS:
         return None
     if classify_intent(t) not in ("faq", "cancel"):
         return None
     m = _NAME_INTRO_RE.search(t)
     if m:
         name = m.group(1).strip().rstrip(".")
-        return name if NAME_RE.fullmatch(name) else None
-    return t if NAME_RE.fullmatch(t) else None
+        return name if _looks_like_name(name) else None
+    return t if _looks_like_name(t) else None
+
+
+# Bare acknowledgements are never a name, however they arrive.
+_ACKNOWLEDGEMENTS = {"yes", "yeah", "yep", "ok", "okay", "sure", "no", "nope"}
+
+# Words that follow "I am / I'm" and are a state, not a name — the
+# intro pattern alone cannot tell "I'm Rahul" from "I'm sorry".
+_NOT_A_NAME = {
+    "fine", "good", "great", "ok", "okay", "here", "ready", "well",
+    "sorry", "afraid", "sure", "happy", "sick", "ill", "unwell",
+    "hurt", "hurting", "bleeding", "pain", "tired", "busy",
+}
+
+
+def _looks_like_name(name):
+    """A candidate name: the NAME_RE shape, and its first word is not
+    a state or acknowledgement."""
+    if not name or not NAME_RE.fullmatch(name):
+        return False
+    return name.strip().split()[0].lower() not in _NOT_A_NAME
 
 
 def _has_keyword(text, keyword):
@@ -178,6 +204,8 @@ class VoiceAgent:
         self.outcome = None
         self.pending = None  # (service, slot) awaiting the caller's name
         self.pending_slot = None  # a slot the caller named before naming a service
+        self.pending_name = None  # a name given before the slot/service was settled
+        self.pending_service = None  # a service named before a slot was settled
         self.pending_cancel = None  # a slot awaiting a name check before cancelling
         self.follow_up_sms = None
         init_db()
@@ -220,9 +248,36 @@ class VoiceAgent:
             name = extract_name(text) if classify_intent(text) in ("faq", "cancel") else None
             if name:
                 slot_to_cancel = self.pending_cancel
-                self.pending_cancel = None
                 self.intent = "cancel"
-                return self._do_cancel(slot_to_cancel, name)
+                ok, msg = booking.cancel(slot_to_cancel, patient_name=name)
+                if ok:
+                    self.pending_cancel = None
+                    self.state = "confirm"
+                    self.outcome = "cancelled"
+                    return self.say("Agent", msg + " Is there anything else I can help with?")
+                # The name did not match — but is there a booking on
+                # that slot at all? If yes, the caller may have
+                # misspoken the name: keep the cancel open and invite
+                # the right name instead of dropping the whole cancel
+                # (the old code cleared the pending cancel on any
+                # failure, so "Asha" after "Wrong Name" fell through
+                # to the RAG fallback). If nothing is booked on the
+                # slot, the cancel is dead and the state clears.
+                with db() as conn:
+                    row = conn.execute(
+                        "SELECT 1 FROM appointments WHERE slot=? AND status='booked'",
+                        (slot_to_cancel,),
+                    ).fetchone()
+                if row:
+                    return self.say(
+                        "Agent",
+                        f"No appointment on {slot_to_cancel} under that name — "
+                        "could you give the name the booking is under?",
+                    )
+                self.pending_cancel = None
+                self.state = "confirm"
+                self.outcome = "answered"
+                return self.say("Agent", msg + " Could you check the date and time and try again?")
             if slot and slot != self.pending_cancel:
                 self.pending_cancel = slot
                 self.intent = "cancel"
@@ -266,26 +321,65 @@ class VoiceAgent:
             # fell through to the RAG "I don't have that" fallback.
             service = extract_service(text)
             if service and not slot:
-                self.pending = (service, self.pending_slot)
+                slot0 = self.pending_slot
                 self.pending_slot = None
                 self.intent = "book"
                 self.state = "book"
+                if self.pending_name:
+                    # The caller already gave their name last turn —
+                    # book now instead of asking for it again.
+                    name = self.pending_name
+                    self.pending_name = None
+                    _ok, msg = self.book(name, service, slot0)
+                    return msg  # book() already added the reply to the transcript
+                self.pending = (service, slot0)
                 return self.say(
                     "Agent",
-                    f"{service} on {self.pending[1]} is available — may I have your name to confirm the booking?",
+                    f"{service} on {slot0} is available — may I have your name to confirm the booking?",
                 )
-            if extract_name(text) and classify_intent(text) == "faq":
+            name = extract_name(text)
+            if name and classify_intent(text) == "faq":
+                self.pending_name = name
                 self.intent = "book"
                 return self.say(
                     "Agent",
-                    f"Thanks — and which service would you like on {self.pending_slot}?",
+                    f"Thanks, {name} — and which service would you like on {self.pending_slot}?",
                 )
             if slot and slot != self.pending_slot:
                 self.pending_slot = None  # a different time: start over below
             elif classify_intent(text) != "book":
                 self.pending_slot = None  # caller moved on to something else
+        if self.state == "book" and not self.pending and not self.pending_slot:
+            # The caller is answering "Which time works for you, and
+            # may I have your name?" with just a time ("2026-11-23
+            # 10:00") or just a name ("My name is Rahul"). Both used
+            # to fall through to the RAG "I don't have that
+            # information" fallback, because a bare time and a bare
+            # name classify as faq, not book. A booking continuation
+            # is not a fresh turn: route it to the booking handler,
+            # which asks for whichever half is still missing. Anything
+            # else (a price question, an emergency, a cancel) is a
+            # fresh turn and falls through to normal dispatch below.
+            if slot or (classify_intent(text) == "faq" and extract_name(text)):
+                self.intent = "book"
+                return self._handle_book(text)
+        if slot and classify_intent(text) in ("book", "faq") and not self.pending and not self.pending_slot:
+            # A fresh turn naming a time ("Is 2026-11-23 10:00
+            # free?") is a slot question, not a FAQ — check the slot
+            # instead of answering from the knowledge base (which
+            # used to reply with the parking line). Emergencies,
+            # cancels and price questions naming a time are not
+            # routed here: their intent says what the caller wants.
+            self.intent = "book"
+            return self._handle_book(text)
 
         self.intent = classify_intent(text)
+        if self.intent != "book":
+            # The caller moved on from booking (a price question, an
+            # emergency, a cancel): a name or service remembered for
+            # that booking must not be reused silently on a later one.
+            self.pending_name = None
+            self.pending_service = None
 
         if self.intent == "emergency":
             self.escalated = True
@@ -335,9 +429,29 @@ class VoiceAgent:
         that does not exist — and never offers an empty list: when nothing
         is free the reply says so instead of 'our next available times
         are: . Which one works for you?'"""
+        was_booking = self.state == "book"
         self.state = "book"
         slot = extract_slot(text)
         service = extract_service(text)
+        if service:
+            self.pending_service = service
+        elif was_booking:
+            # A continuation ("2026-11-23 10:00" after "book a teeth
+            # cleaning") inherits the service the caller already
+            # named — asking "which service?" again made the booking
+            # feel like it had forgotten the first turn.
+            service = self.pending_service
+        else:
+            # A fresh booking turn with no service: a service
+            # remembered from an earlier, finished booking must not
+            # leak into this one.
+            self.pending_service = None
+        # A name in this turn ("2026-11-23 10:00, I'm Rahul") or
+        # remembered from the last one ("My name is Rahul" answered
+        # the slot offer) counts — the caller must not have to repeat
+        # it. extract_name already refuses anything that is not a
+        # plain statement, so "I am in terrible pain" never lands here.
+        name = extract_name(text) or self.pending_name
         if slot:
             slot_dt = booking.parse_slot(slot)
             if slot_dt is not None and slot_dt < booking.now_clinic():
@@ -376,12 +490,23 @@ class VoiceAgent:
                     return self._offer_alternatives(
                         (error or conflict) + " Our next available times are: "
                     )
+                if name:
+                    self.pending = None
+                    self.pending_name = None
+                    _ok, msg = self.book(name, service, slot)
+                    return msg  # book() already added the reply to the transcript
                 self.pending = (service, slot)
                 return self.say(
                     "Agent",
                     f"{service} on {slot} is available — may I have your name to confirm the booking?",
                 )
             self.pending_slot = slot
+            if name:
+                self.pending_name = name
+                return self.say(
+                    "Agent",
+                    f"Thanks, {name} — and which service would you like on {slot}?",
+                )
             return self.say(
                 "Agent",
                 f"{slot} is available — which service would you like, and may I have your name?",
@@ -393,6 +518,14 @@ class VoiceAgent:
                 "Agent",
                 "I'm sorry — we have no free appointments in the next week. "
                 "Would you like me to take a message so the clinic can call you back?",
+            )
+        if name:
+            self.pending_name = name
+            return self.say(
+                "Agent",
+                f"Thanks, {name} — which time works for you? Our next available times are: "
+                + ", ".join(slots)
+                + ".",
             )
         return self.say(
             "Agent",
@@ -451,6 +584,9 @@ class VoiceAgent:
         if ok:
             self.outcome = "booked"
             self.state = "confirm"
+            self.pending_name = None  # the remembered name is spent
+            self.pending_service = None  # and so is the remembered service
+            self.pending = None
             # Draft follow-up SMS (free test path: WhatsApp/Twilio sandbox)
             self.follow_up_sms = (
                 f"Hi {patient_name}, your {service} at {BUSINESS} is confirmed for {slot}. "

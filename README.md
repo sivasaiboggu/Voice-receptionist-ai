@@ -43,11 +43,13 @@ Not an AI-coded look. Built with real external libraries:
 
 - **Tailwind CSS** + shadcn/ui-style components (Button, Card, Badge, Skeleton,
   Toast — in `frontend/src/components/ui/`)
-- **Framer Motion** — fade/slide-in on load, animated live-call indicator,
+- **Framer Motion** — motion only for state changes (new chat bubble, call
+  summary appearing, toast, typing dots), animated live-call indicator,
   progress steps, toast notifications
 - **Lucide** icons, **Recharts** analytics charts (call outcomes, sentiment),
   **React Router** (Overview / Calls / Appointments / Live call)
-- **Dark / light theme** — polished palette, Inter typography via Google Fonts,
+- **Dark / light theme** — OKLCH tokens (docs/design-tokens-0.3.7.md),
+  Satoshi self-hosted, system mono for times and phone numbers,
   consistent spacing, shadows, responsive layout (sidebar on desktop, bottom
   nav on mobile), skeleton loading, hover states
 - Feels like a real SaaS product (Linear / Vercel / Stripe dashboard), not a
@@ -74,7 +76,7 @@ React dashboard — live calls, appointments, charts, live-call simulator
 cp .env.example .env
 python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/python -m backend.app.main demo        # full simulated call, no keys
-.venv/bin/python -m pytest tests/ -q             # 96 tests (99 with a live Postgres, see below)
+.venv/bin/python -m pytest tests/ -q             # 109 tests (112 with a live Postgres, see below)
 ```
 
 Run the API:
@@ -165,6 +167,17 @@ at `localhost`: a visitor's browser can never reach your machine.
 cd frontend && npm run build && npm run preview   # http://localhost:4173
 curl localhost:8001/health
 ```
+
+## What changed in v0.3.7 (master-prompt polish: booking continuations, OKLCH tokens, the day book)
+
+- **Logic — a name-only or bare-time reply no longer dies on the RAG fallback**: after the agent offered slots and asked "Which time works for you, and may I have your name?", a caller answering with just a time ("2026-11-23 10:00") or just a name ("My name is Rahul") was told "I don't have that information", because both classify as faq, not book. The agent now treats those replies as the booking continuation they are — a remembered name and service book once the missing half arrives, and a fresh "Is 2026-11-23 10:00 free?" checks the slot instead of answering from the knowledge base (which used to reply with the parking line). All four name patterns ("My name is …", "This is …", "I'm …", "Call me …") book; a name or service remembered for one booking is never reused after the caller moves on (a price question clears it). Tested: 12 new tests in `tests/test_booking_continuation.py`.
+- **Logic — `extract_name` no longer takes a state or an acknowledgement for a name**: "Yes" after "may I have your name?" used to book the patient as "Yes", and "I am fine" / "I'm sorry" / "I am sick" extracted "fine" / "sorry" / "sick" as the name. Bare acknowledgements and a small state-word list are now refused. "I am in terrible pain" was already refused (emergency intent) and still is. Tested.
+- **Logic — a wrong name on cancel no longer ends the cancel**: the agent said "No appointment under that name" and dropped the pending cancel, so the right name on the next turn fell through to the RAG fallback. It now keeps the cancel open and invites the name the booking is under; only when nothing is booked on the slot at all does the cancel clear. Tested.
+- **UI — OKLCH tokens** (`frontend/src/index.css`, `frontend/tailwind.config.js`, `frontend/src/tokens.json`, `docs/design-tokens-0.3.7.md`): the same palette converted from HSL to OKLCH with hex fallbacks, one blue accent, display (Satoshi 700) + text (Satoshi 400/500) + mono (system stack, slot times / timestamps / phone numbers only). The conversion caught a real defect: destructive `#ef4444` gave white text 3.61:1, below WCAG AA — it is now `#dc2626` (4.62:1) in both modes. Full contrast table in the doc; every text pair passes AA.
+- **UI — the day book**: one ruled row pattern — mono time gutter + 1px hairlines — shared by Today's appointments and Recent calls; the next appointment today (clinic time) carries the single 2px primary rule and a `Next` label. The sentiment pie maps colours by name (positive emerald, negative red, neutral slate); the indigo fourth colour is gone. The Live-call primary CTA lost its `shadow-glow` (the `glow` shadow is removed from the theme). StatCard icon chips gain dark-mode `-400` text shades.
+- **UI — found by real renders this round**: after a finished call the step indicator left "Log call" grey even though the call was logged — it now gets its check (`setStep(STEPS.length)`); and the mobile full-page capture compressed the Recharts charts, a `captureBeyondViewport` artefact (the same page renders correctly in a viewport capture and the DOM measures a correct 308px chart) — `scripts/shots.mjs` now sizes the viewport to the content height for the 390px shot instead.
+- **Tests** — 109 passed, 3 skipped on SQLite (the 3 live Postgres tests, skipped without `VOICE_TEST_POSTGRES_URL`); 13 new this round: <redacted> the cancel name-retry.
+- **Visual proof** — docs/visual-proof-0.3.7/ (same script, `scripts/shots.mjs`, output folder bumped; PNGs local-only, not committed). Counts moved between captures (23 calls / 20 booked at the first capture, 25 / 22 after the live-call runs) because each scripted live-call run logs another real call. The Cancelled filter shows the honest empty state this round — no appointment is currently cancelled (a cancelled slot becomes bookable again and later demo runs rebooked it). The Sunday-hours tension is unchanged — still Siva's call.
 
 ## What changed in v0.3.6 (cancel is name-checked, prices answer first, playbook pass)
 

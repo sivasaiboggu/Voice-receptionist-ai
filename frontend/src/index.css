@@ -30,54 +30,65 @@
 }
 
 @layer base {
+  /* Design tokens — OKLCH, with the hex each triplet renders to in
+     the comment (computed from the previous HSL values, so the look
+     is unchanged except --destructive). One accent (blue); semantic
+     colours only for state. Full table + contrast numbers in
+     docs/design-tokens-0.3.7.md and frontend/src/tokens.json.
+     Mono is the system stack, used only for times and phone numbers
+     (the "day book" time gutter) — Satoshi stays the display+text face. */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 210 40% 96%;
-    --accent-foreground: 222 47% 11%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214 32% 91%;
-    --ring: 221 83% 53%;
+    --background: 1 0 0; /* #ffffff */
+    --foreground: 0.206 0.039 265.5; /* #0f1729 */
+    --card: 1 0 0; /* #ffffff */
+    --card-foreground: 0.206 0.039 265.5; /* #0f1729 */
+    --primary: 0.545 0.215 262.7; /* #2463eb — the one accent */
+    --primary-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --secondary: 0.968 0.007 247.9; /* #f1f5f9 */
+    --secondary-foreground: 0.206 0.039 265.5; /* #0f1729 */
+    --muted: 0.968 0.007 247.9; /* #f1f5f9 */
+    --muted-foreground: 0.556 0.040 256.8; /* #65758b */
+    --accent: 0.968 0.007 247.9; /* #f1f5f9 */
+    --accent-foreground: 0.206 0.039 265.5; /* #0f1729 */
+    /* Destructive was #ef4444 (oklch 0.636 0.208 25.4): white text on
+       it was 3.61:1, below WCAG AA 4.5:1. #dc2626 is 4.62:1. */
+    --destructive: 0.577 0.215 27.3; /* #dc2626 */
+    --destructive-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --border: 0.926 0.013 255.0; /* #e1e7ef */
+    --ring: 0.545 0.215 262.7; /* #2463eb */
     --radius: 0.875rem;
   }
   .dark {
-    --background: 222 47% 7%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 10%;
-    --card-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
-    --border: 217 33% 20%;
-    --ring: 217 91% 60%;
+    --background: 0.167 0.026 265.9; /* #090e1a */
+    --foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --card: 0.197 0.036 265.6; /* #0e1525 */
+    --card-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --primary: 0.626 0.186 259.6; /* #3c83f6 */
+    --primary-foreground: 0.206 0.039 265.5; /* #0f1729 */
+    --secondary: 0.275 0.036 259.7; /* #1d283a */
+    --secondary-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --muted: 0.275 0.036 259.7; /* #1d283a */
+    --muted-foreground: 0.710 0.035 256.8; /* #94a3b8 */
+    --accent: 0.275 0.036 259.7; /* #1d283a */
+    --accent-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --destructive: 0.577 0.215 27.3; /* #dc2626 */
+    --destructive-foreground: 0.984 0.003 247.9; /* #f8fafc */
+    --border: 0.304 0.042 259.7; /* #222f44 */
+    --ring: 0.626 0.186 259.6; /* #3c83f6 */
   }
   * { @apply border-border; }
   body { @apply bg-background text-foreground antialiased; font-family: 'Satoshi', ui-sans-serif, system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums; text-rendering: optimizeLegibility; }
-  ::selection { background: hsl(var(--primary) / 0.18); }
-  :focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+  ::selection { background: oklch(var(--primary) / 0.18); }
+  :focus-visible { outline: 2px solid oklch(var(--ring)); outline-offset: 2px; }
   /* Plain pulse skeleton: the old shimmer was a moving gradient,
      decoration the standard does not want. */
   .skeleton-pulse {
     animation: skeleton-pulse 1.6s ease-in-out infinite;
   }
   /* Slim, theme-aware scrollbar for the transcript and other tall panels. */
-  .thin-scroll { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+  .thin-scroll { scrollbar-width: thin; scrollbar-color: oklch(var(--border)) transparent; }
   .thin-scroll::-webkit-scrollbar { width: 6px; }
-  .thin-scroll::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+  .thin-scroll::-webkit-scrollbar-thumb { background: oklch(var(--border)); border-radius: 999px; }
   .thin-scroll::-webkit-scrollbar-track { background: transparent; }
 }
 

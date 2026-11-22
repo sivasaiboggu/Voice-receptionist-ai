@@ -11,7 +11,18 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 
-const PIE_COLORS = ['#10b981', '#f59e0b', '#ef4444', '#6366f1']
+const AXIS_TICK = { fill: 'oklch(var(--muted-foreground))', fontSize: 12 } as const
+
+// Sentiment has exactly three values, so the chart maps by name, not
+// by position: positive emerald, negative red, neutral slate. The old
+// four-colour list (green/amber/red/indigo) coloured "neutral" indigo
+// or amber depending on call order — a second accent hue with no
+// meaning. These fills are chart graphics, never small text.
+const SENTIMENT_COLORS: Record<string, string> = {
+  positive: '#10b981',
+  negative: '#ef4444',
+  neutral: '#64748b',
+}
 
 // Recharts' default tooltip is a fixed white box — jarring in dark mode.
 // This one uses the theme tokens, so it matches light and dark.
@@ -28,8 +39,6 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
     </div>
   )
 }
-
-const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 12 } as const
 
 function greeting() {
   const h = new Date().getHours()
@@ -72,6 +81,20 @@ export default function Overview() {
       .sort((a, b) => a.slot.localeCompare(b.slot))
   }, [appts, clinicTodayKey])
 
+  // "Now" in clinic time, HH:MM — the next appointment today is the
+  // first one at or after now. It carries the day-book's one accent
+  // rule (a 2px primary bar + primary time); every other row is plain.
+  const clinicNowHHMM = useMemo(() => {
+    if (!clinicTz) return null
+    try {
+      return new Intl.DateTimeFormat('en-GB', { timeZone: clinicTz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date())
+    } catch { return null }
+  }, [clinicTz])
+  const nextApptSlot = useMemo(() => {
+    if (!clinicNowHHMM) return null
+    return todaysAppts.find((a) => a.slot.slice(11) >= clinicNowHHMM)?.slot ?? null
+  }, [todaysAppts, clinicNowHHMM])
+
   const outcomeData = useMemo(() => {
     const m = new Map<string, number>()
     calls.forEach((c) => m.set(c.outcome, (m.get(c.outcome) ?? 0) + 1))
@@ -112,9 +135,9 @@ export default function Overview() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Calls answered" value={stats?.calls_answered ?? 0} sub={`${stats?.calls_today ?? 0} logged today`} icon={PhoneCall} />
-        <StatCard label="Appointments" value={stats?.appointments_booked ?? 0} sub="Booked by the agent" icon={CalendarCheck2} tone="bg-emerald-500/10 text-emerald-600" />
-        <StatCard label="Escalations" value={stats?.escalations ?? 0} sub="Handed to a human" icon={AlertTriangle} tone="bg-amber-500/10 text-amber-600" />
-        <StatCard label="Messages waiting" value={stats?.unhandled_messages ?? 0} sub="Need a callback" icon={PhoneIncoming} tone="bg-violet-500/10 text-violet-600" />
+        <StatCard label="Appointments" value={stats?.appointments_booked ?? 0} sub="Booked by the agent" icon={CalendarCheck2} tone="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" />
+        <StatCard label="Escalations" value={stats?.escalations ?? 0} sub="Handed to a human" icon={AlertTriangle} tone="bg-amber-500/10 text-amber-600 dark:text-amber-400" />
+        <StatCard label="Messages waiting" value={stats?.unhandled_messages ?? 0} sub="Need a callback" icon={PhoneIncoming} tone="bg-violet-500/10 text-violet-600 dark:text-violet-400" />
       </div>
 
       {/* Today's schedule — the first thing a receptionist needs. */}
@@ -137,14 +160,23 @@ export default function Overview() {
             <p className="text-sm text-muted-foreground">No appointments on the book for today. Run a demo call from Live call and one will appear here.</p>
           ) : (
             <div className="divide-y">
-              {todaysAppts.map((a) => (
-                <div key={a.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm first:pt-0 last:pb-0">
-                  <span className="w-14 shrink-0 font-semibold tabular-nums">{a.slot.slice(11)}</span>
-                  <span className="font-medium">{a.patient_name}</span>
-                  <span className="text-muted-foreground">{a.service}</span>
-                  {a.phone && <span className="ml-auto text-xs text-muted-foreground">{a.phone}</span>}
-                </div>
-              ))}
+              {/* The day book: one ruled row pattern — mono time gutter,
+                  hairline separators. The next appointment today carries
+                  the 2px primary rule and a Next label; nothing else on
+                  the row is coloured. */}
+              {todaysAppts.map((a) => {
+                const isNext = a.slot === nextApptSlot
+                return (
+                  <div key={a.id} className="relative flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 pl-3 text-sm first:pt-0 last:pb-0">
+                    {isNext && <span aria-hidden className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-primary" />}
+                    <span className={`w-14 shrink-0 font-mono text-[13px] ${isNext ? 'font-semibold text-primary' : 'font-medium'}`}>{a.slot.slice(11)}</span>
+                    {isNext && <span className="text-[11px] font-semibold uppercase tracking-wide text-primary">Next</span>}
+                    <span className="font-medium">{a.patient_name}</span>
+                    <span className="text-muted-foreground">{a.service}</span>
+                    {a.phone && <span className="ml-auto font-mono text-xs text-muted-foreground">{a.phone}</span>}
+                  </div>
+                )
+              })}
             </div>
           )}
         </CardContent>
@@ -164,7 +196,7 @@ export default function Overview() {
                       animations can stick mid-flight in headless
                       renders and leave the chart blank. */}
                   <BarChart data={outcomeData} margin={{ bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[8, 8, 0, 0]} fill="hsl(var(--primary))" isAnimationActive={false} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="oklch(var(--border))" /><XAxis dataKey="name" tick={AXIS_TICK} interval={0} tickFormatter={(v: string) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)} /><YAxis allowDecimals={false} tick={AXIS_TICK} /><Tooltip content={<ChartTooltip />} cursor={{ fill: 'oklch(var(--muted))', opacity: 0.4 }} /><Bar dataKey="value" radius={[8, 8, 0, 0]} fill="oklch(var(--primary))" isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -180,7 +212,7 @@ export default function Overview() {
               ) : (
                 <div className="relative h-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3} isAnimationActive={false}>{sentimentData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'hsl(var(--foreground))' }}>{v}</span>} /></PieChart>
+                    <PieChart><Pie data={sentimentData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3} isAnimationActive={false}>{sentimentData.map((d) => <Cell key={d.name} fill={SENTIMENT_COLORS[d.name] ?? SENTIMENT_COLORS.neutral} />)}</Pie><Tooltip content={<ChartTooltip />} /><Legend verticalAlign="bottom" height={24} formatter={(v: string) => <span style={{ color: 'oklch(var(--foreground))' }}>{v}</span>} /></PieChart>
                   </ResponsiveContainer>
                   <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pb-8" aria-hidden>
                     <span className="text-2xl font-bold tracking-tight tabular-nums">{sentimentData.reduce((n, d) => n + d.value, 0)}</span>
@@ -202,9 +234,9 @@ export default function Overview() {
             <div className="divide-y">
               {calls.slice(0, 5).map((c) => (
                 <div key={c.id} className="-mx-2 flex flex-wrap items-center gap-2 rounded-lg px-2 py-3 text-sm transition-colors hover:bg-accent/50">
-                  <span className="font-medium">{c.caller}</span>
+                  <span className="font-mono text-[13px] font-medium">{c.caller}</span>
                   <span className="min-w-0 w-full text-muted-foreground sm:w-auto sm:flex-1">{c.summary}</span>
-                  {c.started_at && <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{new Date(c.started_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+                  {c.started_at && <span className="shrink-0 font-mono text-xs text-muted-foreground">{new Date(c.started_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
                   <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
                   <Badge tone={c.escalated ? 'danger' : 'success'}>{c.escalated ? 'Escalated' : c.outcome}</Badge>
                 </div>

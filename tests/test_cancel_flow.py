@@ -54,6 +54,22 @@ def test_cancel_wrong_name_does_not_cancel():
     assert [a for a in booking.list_appointments() if a["slot"] == slot and a["status"] == "booked"]
 
 
+def test_cancel_wrong_name_then_right_name_cancels():
+    """A wrong name must not end the cancel: the caller gets to try
+    the right name instead of the next turn falling through to the
+    RAG fallback."""
+    ag, slot = _booked_agent()
+    ag.handle("I want to cancel my appointment")
+    ag.handle(f"Yes, cancel {slot}")
+    reply = ag.handle("Ravi")
+    assert "under that name" in reply
+    assert ag.state == "cancel" and ag.pending_cancel == slot
+    reply = ag.handle("Asha")
+    assert ag.outcome == "cancelled"
+    assert "Cancelled" in reply
+    assert slot in booking.available_slots(limit=100)
+
+
 def test_cancel_name_in_same_turn_cancels_at_once():
     """'Cancel ... on <time>, I'm Asha' needs no extra round trip."""
     ag, slot = _booked_agent()

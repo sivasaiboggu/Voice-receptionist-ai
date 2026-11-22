@@ -141,7 +141,7 @@ export default function Calls() {
                 <p className="mt-3 text-sm text-muted-foreground">
                   Outcome: <b className="text-foreground">{c.outcome}</b>
                   {c.escalated ? ' · Escalated to a human' : ''}
-                  {c.started_at ? ` · ${new Date(c.started_at).toLocaleString('en-IN')}` : ''}
+                  {c.started_at ? <> · <span className="font-mono text-[13px]">{new Date(c.started_at).toLocaleString('en-IN')}</span></> : ''}
                 </p>
               </CardContent>
             )}

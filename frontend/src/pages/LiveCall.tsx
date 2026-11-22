@@ -107,7 +107,10 @@ export default function LiveCall() {
         push({ title: 'Could not end the call', desc: r.message || 'No active call for this caller.', kind: 'error' })
         return
       }
-      setStep(STEPS.length - 1)
+      // All five steps complete: the call was logged by /call/end, so
+      // "Log call" gets its check too (STEPS.length, not length - 1 —
+      // the old value left the last step grey after a finished call).
+      setStep(STEPS.length)
       setResult(r)
       if (r.escalated) {
         push({ title: 'Call ended — escalated', desc: `Outcome: ${r.outcome}. The agent handed the call to a human.`, kind: 'info' })
@@ -267,7 +270,7 @@ export default function LiveCall() {
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <Button onClick={runScripted} disabled={running} size="lg" className="shadow-glow">
+            <Button onClick={runScripted} disabled={running} size="lg">
               <Play className="h-4 w-4" />{running ? 'Call in progress…' : 'Answer & run scenario'}
             </Button>
             <Button variant="outline" size="lg" disabled={running} onClick={startInteractive}>

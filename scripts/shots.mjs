@@ -1,7 +1,7 @@
 // Real Chrome renders for review: desktop 1280px + phone 390px.
 // Run: node scripts/shots.mjs   (backend must be up on :8001, and the
 // frontend built with VITE_API_URL=http://localhost:8001)
-// Writes docs/visual-proof-0.3.6/*.png. Modelled on the kirana recipe
+// Writes docs/visual-proof-0.3.7/*.png. Modelled on the kirana recipe
 // for this VM: Hatch Chrome needs a WebGL domain-policy file just to
 // start, and it blocks navigation to http://127.0.0.1, so pages load
 // over file:// with --allow-file-access-from-files. The production
@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url)) + '/..';
-const OUT = path.join(ROOT, 'docs', 'visual-proof-0.3.6');
+const OUT = path.join(ROOT, 'docs', 'visual-proof-0.3.7');
 fs.mkdirSync(OUT, { recursive: true });
 const CHROME = '/opt/meta-chromium/chrome';
 const DEBUG_PORT = 9233; // not 9227: the AI SDR agent's Chrome holds that port on this VM
@@ -152,7 +152,18 @@ async function main() {
     await cdp.shot('overview-dark.png');
     await setTheme('light');
     await go('/', 390);
-    await cdp.shot('overview-mobile.png');
+    // Mobile full-page: captureBeyondViewport re-measures Recharts
+    // mid-capture and the charts come out compressed (verified: the
+    // same page renders correctly in a viewport capture, and the DOM
+    // measures a correct 308px chart before the shot). Set the
+    // viewport to the full content height first and capture the
+    // viewport instead — the fixed bottom nav then sits at the very
+    // bottom of the image instead of covering content mid-page.
+    const mobileH = await cdp.eval(`document.documentElement.scrollHeight`);
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width: 390, height: mobileH, deviceScaleFactor: 1, mobile: true });
+    await delay(1200);
+    await cdp.waitFor(`!document.querySelector('.skeleton-pulse')`);
+    await cdp.shot('overview-mobile.png', false);
 
     // Calls, first card expanded to show the transcript. (The filter
     // bar's "Escalated only" label is also .cursor-pointer, so pick the
