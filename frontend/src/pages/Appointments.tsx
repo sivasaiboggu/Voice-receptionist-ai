@@ -1,265 +1,171 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, CalendarCheck2, CalendarDays, CalendarX2, List, RefreshCw } from 'lucide-react'
-import { api, Appt } from '../lib/api'
-import { useToast } from '../lib/useToast'
-import { tzAbbreviation } from '../lib/utils'
-import EmptyState from '../components/EmptyState'
+import { useEffect, useRef, useState } from 'react'
+import { CalendarDays, List } from 'lucide-react'
+import { ActionLink, EmptyState, LoadError, LoadingRows, PageHeading, SectionHeading } from '../components/Desk'
+import { useDesk } from '../components/Layout'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Skeleton } from '../components/ui/skeleton'
 import { Toasts } from '../components/ui/toast'
+import { api, type Appt } from '../lib/api'
+import { useToast } from '../lib/useToast'
+import { dateKey, formatDate, recordLabel, tzAbbreviation } from '../lib/utils'
+
+type StatusFilter = 'all' | 'booked' | 'cancelled'
+
+function dateLabel(key: string, options: Intl.DateTimeFormatOptions) {
+  return formatDate(new Date(`${key}T12:00:00Z`), options, 'UTC')
+}
+
+function groupByDay(appointments: Appt[]) {
+  const groups = new Map<string, Appt[]>()
+  for (const appointment of [...appointments].sort((a, b) => a.slot.localeCompare(b.slot))) {
+    const key = appointment.slot.slice(0, 10)
+    const day = groups.get(key) ?? []
+    day.push(appointment)
+    groups.set(key, day)
+  }
+  return groups
+}
 
 export default function Appointments() {
-  const navigate = useNavigate()
+  const { health, now } = useDesk()
+  const zone = health?.timezone
+  const today = dateKey(now, zone)
   const { toasts, push, dismiss } = useToast()
-  const [appts, setAppts] = useState<Appt[]>([])
-  const [loading, setLoading] = useState(true)
+  const [appointments, setAppointments] = useState<Appt[] | null>(null)
   const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
   const [confirming, setConfirming] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
-  // List vs calendar view; calendar groups bookings by clinic-local day.
+  const keepButton = useRef<HTMLButtonElement>(null)
+  const statusFilter = useRef<HTMLSelectElement>(null)
+  const focusAfterConfirmation = useRef<HTMLElement | null>(null)
   const [view, setView] = useState<'list' | 'calendar'>('list')
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
-  // List-view status filter — cancelled appointments used to sit mixed
-  // in with booked ones and there was no way to separate them.
-  const [statusFilter, setStatusFilter] = useState<'all' | 'booked' | 'cancelled'>('all')
-  const visibleAppts = statusFilter === 'all' ? appts : appts.filter((a) => a.status === statusFilter)
-  // Clinic timezone from /health — every slot time on this page is in it.
-  const [clinicTz, setClinicTz] = useState('')
+  const [status, setStatus] = useState<StatusFilter>('all')
 
-  // Today in the CLINIC timezone, not the browser's: a viewer abroad
-  // would otherwise see "today" on the wrong clinic day, and the
-  // calendar groups bookings by clinic-local date. Falls back to the
-  // browser date until /health answers with the clinic zone.
-  const clinicTodayKey = useMemo(() => {
-    if (!clinicTz) return null
-    try {
-      return new Intl.DateTimeFormat('en-CA', { timeZone: clinicTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-    } catch { return null }
-  }, [clinicTz])
+  useEffect(() => {
+    let current = true
+    api.appointments()
+      .then((value) => { if (current) setAppointments(value) })
+      .catch((failure: Error) => { if (current) setError(failure.message) })
+    return () => { current = false }
+  }, [attempt])
 
-  // Next 14 days as YYYY-MM-DD keys, starting on clinic today.
-  const days = useMemo(() => {
-    const out: { key: string; label: string; weekday: string; isToday: boolean }[] = []
-    const base = clinicTodayKey ? new Date(`${clinicTodayKey}T12:00:00`) : new Date()
-    for (let i = 0; i < 14; i++) {
-      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i)
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      out.push({
-        key,
-        label: String(d.getDate()),
-        weekday: d.toLocaleDateString('en-IN', { weekday: 'short' }),
-        isToday: i === 0,
-      })
+  useEffect(() => {
+    if (confirming !== null) {
+      keepButton.current?.focus()
+    } else if (focusAfterConfirmation.current) {
+      const row = focusAfterConfirmation.current
+      if (row.isConnected) row.focus()
+      else statusFilter.current?.focus()
+      focusAfterConfirmation.current = null
     }
-    return out
-  }, [clinicTodayKey])
+  }, [confirming])
 
-  const monthLabel = useMemo(() => {
-    if (days.length === 0) return ''
-    const first = new Date(`${days[0].key}T12:00:00`)
-    const last = new Date(`${days[days.length - 1].key}T12:00:00`)
-    const fmt = (d: Date) => d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
-    const f = fmt(first)
-    return f === fmt(last) ? f : `${first.toLocaleDateString('en-IN', { month: 'short' })} – ${fmt(last)}`
-  }, [days])
-
-  const byDay = (key: string) => appts.filter((a) => a.slot.slice(0, 10) === key)
-  const selectedAppts = selectedDay ? byDay(selectedDay) : []
-  const tzNote = clinicTz ? ` All times are clinic time (${tzAbbreviation(clinicTz)}, ${clinicTz}).` : ''
-
-  // Human day label for a clinic-local slot date: "Today", "Tomorrow",
-  // a weekday, or a short date — a bare "2026-11-24" makes the reader
-  // do calendar maths. Judged against clinic today, not the browser's.
-  const dayLabel = (slot: string) => {
-    const key = slot.slice(0, 10)
-    if (!clinicTodayKey) return key
-    const today = new Date(`${clinicTodayKey}T12:00:00`)
-    const d = new Date(`${key}T12:00:00`)
-    const diff = Math.round((d.getTime() - today.getTime()) / 86400000)
-    if (diff === 0) return 'Today'
-    if (diff === 1) return 'Tomorrow'
-    if (diff === -1) return 'Yesterday'
-    if (diff > 1 && diff < 7) return d.toLocaleDateString('en-IN', { weekday: 'long' })
-    return d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
-  }
-
-  const load = () => {
-    setLoading(true); setError('')
-    api.health().then((h) => setClinicTz(h.timezone || '')).catch(() => {})
-    api.appointments().then(setAppts).catch((e: Error) => setError(e.message)).finally(() => setLoading(false))
-  }
-  useEffect(load, [])
-
-  const cancel = async (a: Appt) => {
+  async function cancel(appointment: Appt) {
     setBusy(true)
     try {
-      const r = await api.cancelAppointment(a.slot, a.patient_name)
-      if (r.ok) {
-        push({ title: 'Appointment cancelled', desc: r.message, kind: 'success' })
-        setAppts((xs) => xs.map((x) => (x.id === a.id ? { ...x, status: 'cancelled' } : x)))
-      } else {
-        push({ title: 'Could not cancel', desc: r.message, kind: 'error' })
-      }
-    } catch (e) {
-      push({ title: 'Could not cancel', desc: e instanceof Error ? e.message : 'Unknown error', kind: 'error' })
+      const response = await api.cancelAppointment(appointment.slot, appointment.patient_name)
+      if (!response.ok) throw new Error(response.message)
+      setAppointments((current) => current?.map((item) => item.id === appointment.id ? { ...item, status: 'cancelled' } : item) ?? null)
+      push({ title: 'Appointment cancelled', desc: response.message, kind: 'success' })
+    } catch (failure) {
+      push({ title: 'Could not cancel the appointment', desc: failure instanceof Error ? failure.message : 'Try again in a moment.', kind: 'error' })
     } finally {
-      setBusy(false); setConfirming(null)
+      setBusy(false)
+      setConfirming(null)
     }
   }
 
-  if (loading) return (
-    <div className="space-y-4">
-      <div><Skeleton className="h-8 w-48" /><Skeleton className="mt-2 h-4 w-96" /></div>
-      <div className="grid gap-4 sm:grid-cols-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}</div>
-    </div>
-  )
-  if (error) return (
-    <div className="space-y-4">
-      <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend.{tzNote}</p></div>
-      <Card>
-        <CardContent className="flex flex-col items-start gap-3 p-6">
-          <div className="flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400"><AlertTriangle className="h-4 w-4" />Could not load appointments</div>
-          <p className="text-sm leading-relaxed text-muted-foreground">{error}</p>
-          <Button variant="outline" size="sm" onClick={load}><RefreshCw className="h-4 w-4" />Try again</Button>
-        </CardContent>
-      </Card>
-    </div>
-  )
+  function appointmentRows(rows: Appt[]) {
+    return (
+      <ul className="register">
+        {rows.map((appointment) => (
+          <li key={appointment.id} className="register-row booking-row" tabIndex={-1}>
+            <time className="register-mark data-text" dateTime={appointment.slot.replace(' ', 'T')}>{appointment.slot.slice(11, 16)}</time>
+            <div><strong>{appointment.patient_name}</strong><p className="muted">{appointment.service}{appointment.phone ? ` · ${appointment.phone}` : ''}</p></div>
+            <div className="booking-actions">
+              <Badge tone={appointment.status === 'booked' ? 'success' : 'default'}>{recordLabel(appointment.status)}</Badge>
+              {appointment.status === 'booked' && (confirming === appointment.id ? (
+                <div className="cancel-confirmation" role="group" aria-label={`Cancel ${appointment.patient_name}’s appointment?`}>
+                  <span>Cancel this appointment?</span>
+                  <Button size="sm" variant="destructive" onClick={() => void cancel(appointment)} disabled={busy}>Yes, cancel</Button>
+                  <Button ref={keepButton} size="sm" variant="outline" onClick={() => setConfirming(null)} disabled={busy}>Keep it</Button>
+                </div>
+              ) : <Button size="sm" variant="outline" disabled={busy} onClick={(event) => {
+                focusAfterConfirmation.current = event.currentTarget.closest('li')
+                setConfirming(appointment.id)
+              }}>Cancel appointment</Button>)}
+            </div>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  const heading = <PageHeading title="Appointments" description="Bookings made by the receptionist." />
+  if (error) return <>{heading}<LoadError title="Could not load appointments" message={error} retry={() => { setError(''); setAttempt(attempt + 1) }} /></>
+  if (!appointments) return <>{heading}<LoadingRows label="Loading appointments…" /></>
+
+  const visible = status === 'all' ? appointments : appointments.filter((appointment) => appointment.status === status)
+  const calendarGroups = groupByDay(appointments)
+  const listGroups = groupByDay(visible)
+  const base = new Date(`${today}T12:00:00Z`).getTime()
+  const days = Array.from({ length: 14 }, (_, index) => new Date(base + index * 86_400_000).toISOString().slice(0, 10))
+  const openDay = selectedDay && days.includes(selectedDay) ? selectedDay : null
+  const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' }
 
   return (
-    <div className="space-y-4">
+    <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div><h1 className="text-2xl font-bold tracking-tight">Appointments</h1><p className="text-sm text-muted-foreground">Booked by the voice agent — double-booking is prevented by the backend. Cancelled slots become available again. Demo data — bookings made by simulated demo calls.{tzNote}</p></div>
-        <div className="flex flex-wrap items-center gap-2">
-          {view === 'list' && (
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'booked' | 'cancelled')} aria-label="Filter by status" className="h-9 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <option value="all">All statuses</option>
-              <option value="booked">Booked</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          )}
-          <div className="flex gap-1 rounded-md border p-1" role="group" aria-label="Appointments view">
-            <Button variant={view === 'list' ? 'default' : 'ghost'} size="sm" onClick={() => setView('list')} aria-pressed={view === 'list'}><List className="h-4 w-4" />List</Button>
-            <Button variant={view === 'calendar' ? 'default' : 'ghost'} size="sm" onClick={() => setView('calendar')} aria-pressed={view === 'calendar'}><CalendarDays className="h-4 w-4" />Calendar</Button>
-          </div>
+      {heading}
+      <div className="appointment-toolbar">
+        <div className="appointment-views" role="group" aria-label="Appointments view">
+          <Button variant={view === 'list' ? 'default' : 'outline'} onClick={() => setView('list')} aria-pressed={view === 'list'}><List size={16} aria-hidden="true" />List</Button>
+          <Button variant={view === 'calendar' ? 'default' : 'outline'} onClick={() => setView('calendar')} aria-pressed={view === 'calendar'}><CalendarDays size={16} aria-hidden="true" />Calendar</Button>
         </div>
+        {view === 'list' && <div><label htmlFor="appointment-status" className="field-label">Status</label>
+          <select id="appointment-status" ref={statusFilter} value={status} onChange={(event) => setStatus(event.target.value as StatusFilter)}>
+            <option value="all">All statuses</option><option value="booked">Booked</option><option value="cancelled">Cancelled</option>
+          </select>
+        </div>}
       </div>
-      {appts.length === 0 && (
-        <EmptyState icon={CalendarCheck2} title="No appointments yet" desc="Appointments booked by the agent show up here with the service, time and caller." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
-      )}
-      {view === 'list' && visibleAppts.length === 0 && appts.length > 0 && (
-        <EmptyState icon={CalendarCheck2} title={`No ${statusFilter} appointments`} desc="Try the other status filter — the appointments are still there." action={<Button size="sm" variant="outline" onClick={() => setStatusFilter('all')}>Show all</Button>} />
-      )}
-      {view === 'calendar' && appts.length > 0 && (
-        <>
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold tracking-tight">{monthLabel} <span className="font-normal text-muted-foreground">· next 14 days, clinic time</span></h2>
-            <span className="text-xs text-muted-foreground">Tap a day to see its appointments</span>
-          </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-            {days.map((d) => {
-              const dayAppts = byDay(d.key)
-              const booked = dayAppts.filter((a) => a.status === 'booked').length
+
+      {zone && <p className="appointments-zone muted">Times in {tzAbbreviation(zone)}</p>}
+
+      {!appointments.length ? (
+        <EmptyState title="No appointments yet" description="Bookings appear here after the receptionist confirms a time."><ActionLink to="/live">Run a demo call</ActionLink></EmptyState>
+      ) : view === 'list' ? (
+        <div className="booking-groups">
+          {listGroups.size ? [...listGroups.entries()].map(([key, rows]) => (
+            <section key={key} className="ruled-section"><SectionHeading title={key === today ? 'Today' : dateLabel(key, dateOptions)} note={key === today ? dateLabel(key, dateOptions) : undefined} />{appointmentRows(rows)}</section>
+          )) : <EmptyState title={`No ${status} appointments`} description="Choose a different status to see more bookings."><Button variant="outline" onClick={() => setStatus('all')}>Show all</Button></EmptyState>}
+        </div>
+      ) : (
+        <section className="ruled-section">
+          <SectionHeading title="Next 14 days" note={`${dateLabel(days[0], { day: 'numeric', month: 'short' })} – ${dateLabel(days[13], { day: 'numeric', month: 'short', year: 'numeric' })}`} />
+          <div className="appointment-calendar">
+            {days.map((day) => {
+              const rows = calendarGroups.get(day) ?? []
               return (
-                <button
-                  key={d.key}
-                  onClick={() => setSelectedDay(selectedDay === d.key ? null : d.key)}
-                  aria-pressed={selectedDay === d.key}
-                  className={`min-h-24 rounded-xl border p-2.5 text-left transition-colors duration-200 hover:border-primary/60 ${selectedDay === d.key ? 'border-primary bg-primary/10 shadow-md ring-2 ring-primary/25' : ''} ${d.isToday ? 'bg-primary/5 ring-1 ring-inset ring-primary/20' : 'bg-card shadow-soft'}`}
-                >
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-lg font-bold leading-none">{d.label}</span>
-                    <span className="text-[11px] uppercase text-muted-foreground">{d.weekday}{d.isToday ? ' · Today' : ''}</span>
-                  </div>
-                  <div className="mt-2 space-y-1">
-                    {dayAppts.length === 0 && <span className="text-xs text-muted-foreground">No bookings</span>}
-                    {dayAppts.slice(0, 3).map((a) => (
-                      <div key={a.id} className={`flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[11px] font-medium ${a.status === 'booked' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/10 text-red-700 line-through dark:text-red-400'}`}>
-                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.status === 'booked' ? 'bg-emerald-500' : 'bg-red-400'}`} />
-                        <span className="font-mono">{a.slot.slice(11)}</span> {a.patient_name}
-                      </div>
-                    ))}
-                    {dayAppts.length > 3 && <span className="text-[11px] text-muted-foreground">+{dayAppts.length - 3} more</span>}
-                  </div>
-                  {booked > 0 && <div className="mt-1 text-[11px] text-muted-foreground">{booked} booked</div>}
+                <button key={day} type="button" aria-pressed={openDay === day} onClick={() => setSelectedDay(openDay === day ? null : day)}>
+                  <span className="muted">{day === today ? 'Today' : dateLabel(day, { weekday: 'short' })}</span>
+                  <time className="data-text" dateTime={day}>{dateLabel(day, { day: 'numeric', month: 'short' })}</time>
+                  <span>{rows.filter((appointment) => appointment.status === 'booked').length} booked</span>
+                  {rows.slice(0, 3).map((appointment) => <small key={appointment.id} className="muted">{appointment.slot.slice(11, 16)} {appointment.patient_name}{appointment.status === 'cancelled' ? ' (cancelled)' : ''}</small>)}
+                  {rows.length > 3 && <small className="muted">+{rows.length - 3} more</small>}
                 </button>
               )
             })}
           </div>
-          {selectedDay && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  {new Date(`${selectedDay}T12:00:00`).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-                  {' '}· {selectedAppts.length} appointment{selectedAppts.length === 1 ? '' : 's'}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {selectedAppts.length === 0 && <p className="text-sm text-muted-foreground">Nothing booked on this day yet.</p>}
-                {selectedAppts.map((a) => (
-                  <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-3 shadow-soft transition-colors hover:bg-accent/40">
-                    <div>
-                      <p className="text-sm font-medium">{a.patient_name} · {a.service}</p>
-                      <p className="text-xs text-muted-foreground">{dayLabel(a.slot)} <span className="font-mono">{a.slot.slice(11)}</span>{a.phone ? <> · <span className="font-mono">{a.phone}</span></> : ''}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge tone={a.status === 'booked' ? 'success' : 'danger'}>{a.status}</Badge>
-                      {a.status === 'booked' && (
-                        confirming === a.id ? (
-                          <>
-                            <span className="text-sm font-medium">Cancel?</span>
-                            <Button variant="destructive" size="sm" disabled={busy} onClick={() => cancel(a)}>Yes, cancel</Button>
-                            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirming(null)}>Keep it</Button>
-                          </>
-                        ) : (
-                          <Button variant="outline" size="sm" onClick={() => setConfirming(a.id)}><CalendarX2 className="h-4 w-4" />Cancel</Button>
-                        )
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+          {openDay && (
+            <section className="selected-day">
+              <SectionHeading title={dateLabel(openDay, dateOptions)} />
+              {calendarGroups.has(openDay) ? appointmentRows(calendarGroups.get(openDay)!) : <EmptyState title="Nothing booked" description="There are no appointments on this day." />}
+            </section>
           )}
-        </>
+        </section>
       )}
-      {view === 'list' && (
-      <div className="grid gap-4 sm:grid-cols-2">
-        {visibleAppts.map((a) => (
-          <div key={a.id}>
-            <Card>
-              <CardHeader>
-                {/* See Overview: the row flex must be an inner div, not on
-                    the CardHeader — its base `flex-col` beats `flex-row`. */}
-                <div className="flex flex-wrap items-center gap-3">
-                  <CalendarCheck2 className="h-5 w-5 shrink-0 text-primary" />
-                  <CardTitle className="min-w-0 flex-1 text-base">{a.patient_name}</CardTitle>
-                  <Badge tone={a.status === 'booked' ? 'success' : a.status === 'cancelled' ? 'danger' : 'default'}>{a.status}</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">{a.service} · {dayLabel(a.slot)} <span className="font-mono">{a.slot.slice(11)}</span>{a.phone ? <> · <span className="font-mono">{a.phone}</span></> : ''}</p>
-                {a.status === 'booked' && (
-                  confirming === a.id ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-medium">Cancel this appointment?</span>
-                      <Button variant="destructive" size="sm" disabled={busy} onClick={() => cancel(a)}>Yes, cancel</Button>
-                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirming(null)}>Keep it</Button>
-                    </div>
-                  ) : (
-                    <Button variant="outline" size="sm" onClick={() => setConfirming(a.id)}><CalendarX2 className="h-4 w-4" />Cancel appointment</Button>
-                  )
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        ))}
-      </div>
-      )}
-    </div>
+    </>
   )
 }

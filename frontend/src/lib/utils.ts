@@ -15,3 +15,45 @@ export function tzAbbreviation(tz?: string | null) {
     return tz
   }
 }
+
+export function formatDate(date: Date, options: Intl.DateTimeFormatOptions, timeZone?: string) {
+  try {
+    return new Intl.DateTimeFormat('en-IN', { ...options, timeZone }).format(date)
+  } catch (error) {
+    if (Number.isNaN(date.getTime())) return ''
+    if (error instanceof RangeError && timeZone) return formatDate(date, options)
+    throw error
+  }
+}
+
+export function dateKey(date: Date, timeZone?: string) {
+  try {
+    return date.toLocaleDateString('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+  } catch (error) {
+    if (error instanceof RangeError && timeZone) return dateKey(date)
+    throw error
+  }
+}
+
+export function clockTime(date: Date, timeZone?: string) {
+  return formatDate(date, { hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }, timeZone)
+}
+
+export function callDate(timestamp?: string) {
+  if (!timestamp) return null
+  const normalized = timestamp.replace(' ', 'T')
+  const date = new Date(/(?:z|[+-]\d{2}:?\d{2})$/i.test(normalized) || normalized.length === 10 ? normalized : `${normalized}Z`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const recordLabels: Record<string, string> = {
+  'escalated-emergency': 'Emergency handoff',
+  'escalated-human': 'Human handoff',
+  'faq-answered': 'Question answered',
+  'message-taken': 'Message taken',
+}
+
+export function recordLabel(value: string) {
+  const words = recordLabels[value] ?? value.replace(/[-_]+/g, ' ')
+  return words ? words[0].toUpperCase() + words.slice(1) : 'Unknown'
+}

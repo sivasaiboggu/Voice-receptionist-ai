@@ -37,23 +37,16 @@ base, and escalates to a human when it should.
 
 No keys are hardcoded. Everything paid is optional and has a free/mock fallback.
 
-## Dashboard — production-level UI
+## Dashboard
 
-Not an AI-coded look. Built with real external libraries:
+- **Overview** shows the clinic schedule, call totals and recent outcomes.
+- **Calls** pairs a searchable register with the selected call’s transcript.
+- **Appointments** provides a chronological list, a 14-day calendar and cancellation.
+- **Live call** runs scripted scenarios or typed caller turns with the real API.
+- **Settings** stores appearance in the browser and reports the clinic connection.
 
-- **Tailwind CSS** + shadcn/ui-style components (Button, Card, Badge, Skeleton,
-  Toast — in `frontend/src/components/ui/`)
-- **Framer Motion** — motion only for state changes (new chat bubble, call
-  summary appearing, toast, typing dots), animated live-call indicator,
-  progress steps, toast notifications
-- **Lucide** icons, **Recharts** analytics charts (call outcomes, sentiment),
-  **React Router** (Overview / Calls / Appointments / Live call)
-- **Dark / light theme** — OKLCH tokens (docs/design-tokens-0.3.7.md),
-  Satoshi self-hosted, system mono for times and phone numbers,
-  consistent spacing, shadows, responsive layout (sidebar on desktop, bottom
-  nav on mobile), skeleton loading, hover states
-- Feels like a real SaaS product (Linear / Vercel / Stripe dashboard), not a
-  demo template
+The [redesign notes](docs/reception-desk-redesign.md) cover the ruled
+register, light and dark OKLCH tokens, measured contrast and local review.
 
 ## Architecture
 
@@ -92,7 +85,7 @@ Run the API:
 Run the dashboard:
 
 ```bash
-cd frontend && npm install && npm run dev   # http://localhost:5174
+cd frontend && npm ci && npm run dev   # http://localhost:5174
 npm run build                                # production build (verified)
 ```
 
@@ -104,8 +97,8 @@ docker compose up --build
 
 ## 2-minute demo flow
 
-0:00 — Dashboard → **Live call** → "Answer & run demo call"
-0:20 — Watch the steps: Greet → Understand → Answer / book → Confirm → Log call
+0:00 — Dashboard → **Live call** → "Run scenario"
+0:20 — Watch the steps: Greet → Understand → Answer or book → Confirm → Log call
 0:45 — Transcript appears: booking request, opening hours (cited), price (cited)
 1:15 — Appointment booked (Teeth cleaning, first free slot), SMS draft shown
 1:30 — Overview: charts + call log update; Appointments: the new booking

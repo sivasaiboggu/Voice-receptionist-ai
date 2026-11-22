@@ -1,389 +1,376 @@
-import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { BatteryMedium, Check, Clock3, Copy, Loader2, MessageSquareText, Phone, PhoneOff, Play, Send, Signal, Wifi } from 'lucide-react'
-import { api, EndCallResult } from '../lib/api'
-import { useToast } from '../lib/useToast'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Check, Copy, MessageSquare, PhoneOff, Play, Send } from 'lucide-react'
+import * as z from 'zod/mini'
+import { EmptyState, PageHeading, SectionHeading } from '../components/Desk'
+import { Transcript, type Turn } from '../components/Transcript'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Toasts } from '../components/ui/toast'
+import { api, type EndCallResult } from '../lib/api'
+import { useToast } from '../lib/useToast'
+import { recordLabel } from '../lib/utils'
 
 const CALLER = '+919573719115'
-const STEPS = ['Greet', 'Understand', 'Answer / book', 'Confirm', 'Log call']
+const STEPS = ['Greet', 'Understand', 'Answer or book', 'Confirm', 'Log call']
 const STATE_STEP: Record<string, number> = { greet: 0, understand: 1, book: 2, cancel: 2, message: 2, faq: 2, confirm: 3, escalate: 3 }
+const callerLine = z.string().check(
+  z.trim(),
+  z.minLength(1, 'Enter what the caller says.'),
+  z.refine((text) => [...text].length <= 2000, 'Use 2,000 characters or fewer.'),
+)
 
-const SCENARIOS: { label: string; desc: string; turns: string[]; service?: string }[] = [
+const scenarios: { label: string; description: string; turns: string[]; service?: string }[] = [
   {
     label: 'Booking',
-    desc: 'Books a teeth cleaning, asks hours & price — then the agent books the first free slot.',
+    description: 'Book a cleaning, check the clinic hours and ask about the price.',
     turns: ["Hi, I'd like to book a teeth cleaning appointment", 'What are your opening hours?', 'How much does cleaning cost?'],
     service: 'Teeth cleaning',
   },
   {
     label: 'Emergency',
-    desc: 'Severe pain — the agent escalates to a human and never auto-books.',
+    description: 'Hear how the receptionist hands off a caller in severe pain.',
     turns: ['I am in terrible pain and bleeding'],
   },
   {
     label: 'Price question',
-    desc: 'Asks what a root canal costs — answered from the knowledge base, with a citation.',
+    description: 'Ask what a root canal costs.',
     turns: ['How much does a root canal cost?'],
   },
 ]
 
-type Msg = { speaker: 'Agent' | 'Caller'; text: string; intent?: string }
+type Mode = 'scripted' | 'interactive'
+type Session = {
+  mode: Mode
+  started: boolean
+  stopping: boolean
+  busy: boolean
+  task: Promise<void>
+  closing?: Promise<EndCallResult | null>
+}
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// The API identifies the simulator by a shared caller number. A session
+// opened on this page must finish before the same tab can reuse the caller.
+let pendingSession: Session | null = null
+
+function closeSession(session: Session) {
+  session.stopping = true
+  session.closing ??= (async () => {
+    try {
+      await session.task
+      return session.started ? await api.endCall(CALLER) : null
+    } finally {
+      if (pendingSession === session) pendingSession = null
+    }
+  })()
+  return session.closing
+}
+
+const waitForTurn = () => new Promise<void>((resolve) => window.setTimeout(resolve, 350))
+const elapsedLabel = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+
+const gsmBasic = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà'
+const gsmExtended = '^{}\\[~]|€\f'
+
+function smsSegments(text: string) {
+  const gsm = [...text].every((character) => gsmBasic.includes(character) || gsmExtended.includes(character))
+  const size = gsm ? [...text].reduce((total, character) => total + (gsmExtended.includes(character) ? 2 : 1), 0) : text.length
+  return size <= (gsm ? 160 : 70) ? 1 : Math.ceil(size / (gsm ? 153 : 67))
+}
 
 export default function LiveCall() {
-  const [running, setRunning] = useState(false)
+  const [phase, setPhase] = useState<'idle' | 'starting' | 'running' | 'ending'>('idle')
+  const [mode, setMode] = useState<Mode>('scripted')
   const [typing, setTyping] = useState(false)
-  const [messages, setMessages] = useState<Msg[]>([])
+  const [messages, setMessages] = useState<Turn[]>([])
   const [step, setStep] = useState(0)
   const [scenario, setScenario] = useState(0)
   const [customText, setCustomText] = useState('')
+  const [fieldError, setFieldError] = useState('')
   const [elapsed, setElapsed] = useState(0)
   const [result, setResult] = useState<EndCallResult | null>(null)
-  const [smsState, setSmsState] = useState<'idle' | 'sending' | 'done' | 'error'>('idle')
+  const [smsState, setSmsState] = useState<'idle' | 'sending' | 'sent' | 'recorded' | 'error'>('idle')
   const [smsNote, setSmsNote] = useState('')
   const [copied, setCopied] = useState(false)
   const { toasts, push, dismiss } = useToast()
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const stopRef = useRef(false)
-  // finishCall must run exactly once per call: End call and the scripted
-  // loop's own finish can race (both call /call/end), and the second
-  // call returns {ok: false} with no outcome — which used to overwrite
-  // the real summary with an empty badge and "Outcome: undefined".
-  const endedRef = useRef(false)
+  const transcript = useRef<HTMLDivElement>(null)
+  const composer = useRef<HTMLInputElement>(null)
+  const sessionRef = useRef<Session | null>(null)
+  const active = phase !== 'idle'
 
-  // Call timer — ticks only while a call is live.
-  useEffect(() => {
-    if (!running) return
-    const t = setInterval(() => setElapsed((e) => e + 1), 1000)
-    return () => clearInterval(t)
-  }, [running])
+  useEffect(() => () => {
+    const session = sessionRef.current
+    sessionRef.current = null
+    if (session) void closeSession(session).catch(() => {})
+  }, [])
 
-  // Keep the newest bubble in view as the conversation flows.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    if (!active) return
+    const started = Date.now()
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [active])
+
+  useEffect(() => {
+    if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight
   }, [messages, typing])
 
-  const fmtElapsed = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+  useEffect(() => {
+    if (phase === 'running' && mode === 'interactive') composer.current?.focus()
+  }, [phase, mode])
 
-  // SMS segments at the standard 160 GSM characters — the draft is one
-  // segment for today's demo data, but a long name or service can push
-  // it over, so count it honestly instead of hardcoding "1 segment".
-  const smsSegments = (s: string) => Math.max(1, Math.ceil(s.length / 160))
-
-  const fail = (e: unknown) => {
-    stopRef.current = true
-    push({ title: 'API not reachable', desc: e instanceof Error ? e.message : 'Start the backend: uvicorn backend.app.api:app --port 8001', kind: 'error' })
+  function fail(title: string, error: unknown) {
+    push({ title, desc: error instanceof Error ? error.message : 'Try again in a moment.', kind: 'error' })
   }
 
-  /** One real caller turn against the live session API. */
-  const sendTurn = async (text: string): Promise<{ reply: string; intent: string; state: string } | null> => {
-    setMessages((m) => [...m, { speaker: 'Caller', text }])
+  function clear() {
+    setResult(null)
+    setMessages([])
+    setStep(0)
+    setElapsed(0)
+    setCustomText('')
+    setFieldError('')
+    setSmsState('idle')
+    setSmsNote('')
+    setCopied(false)
+  }
+
+  async function sendTurn(session: Session, text: string) {
+    setMessages((turns) => [...turns, { speaker: 'Caller', text }])
     setTyping(true)
     try {
-      const r = await api.callTurn(CALLER, text)
-      setTyping(false)
-      setMessages((m) => [...m, { speaker: 'Agent', text: r.reply, intent: r.intent }])
-      setStep(STATE_STEP[r.state] ?? 2)
-      return r
-    } catch (e) {
-      setTyping(false)
-      fail(e)
-      return null
-    }
-  }
-
-  const finishCall = async () => {
-    if (endedRef.current) return
-    endedRef.current = true
-    try {
-      const r = await api.endCall(CALLER)
-      if (!r.ok) {
-        // No active session (already ended): don't clobber the summary.
-        push({ title: 'Could not end the call', desc: r.message || 'No active call for this caller.', kind: 'error' })
-        return
+      const turn = await api.callTurn(CALLER, text)
+      if (sessionRef.current === session) {
+        setMessages((turns) => [...turns, { speaker: 'Agent', text: turn.reply, intent: turn.intent }])
+        setStep(STATE_STEP[turn.state] ?? 2)
       }
-      // All five steps complete: the call was logged by /call/end, so
-      // "Log call" gets its check too (STEPS.length, not length - 1 —
-      // the old value left the last step grey after a finished call).
-      setStep(STEPS.length)
-      setResult(r)
-      if (r.escalated) {
-        push({ title: 'Call ended — escalated', desc: `Outcome: ${r.outcome}. The agent handed the call to a human.`, kind: 'info' })
-      } else {
-        push({ title: 'Call ended', desc: `Outcome: ${r.outcome}${r.follow_up_sms ? ' — appointment booked, SMS draft ready below.' : '.'}`, kind: 'success' })
-      }
-    } catch (e) {
-      fail(e)
+      return turn
     } finally {
-      setRunning(false)
-      setTyping(false)
+      if (sessionRef.current === session) setTyping(false)
     }
   }
 
-  const runScripted = async () => {
-    const sc = SCENARIOS[scenario]
-    stopRef.current = false
-    endedRef.current = false
-    setRunning(true); setResult(null); setMessages([]); setStep(0); setElapsed(0); setSmsState('idle'); setSmsNote('')
+  async function finish(session: Session) {
+    if (session.closing || sessionRef.current !== session) return
+    setPhase('ending')
     try {
-      const start = await api.startCall(CALLER)
-      setMessages([{ speaker: 'Agent', text: start.reply }])
-      setStep(1)
-      let escalated = false
-      for (const line of sc.turns) {
-        if (stopRef.current) return
-        await sleep(500)
-        const r = await sendTurn(line)
-        if (!r) return
-        if (r.state === 'escalate') { escalated = true; break }
+      const logged = await closeSession(session)
+      if (!logged || sessionRef.current !== session) return
+      if (!logged.ok) throw new Error(logged.message || 'The API could not find the active call.')
+      setStep(STEPS.length)
+      setResult(logged)
+      push({
+        title: logged.escalated ? 'Call logged and escalated' : 'Call logged',
+        desc: logged.follow_up_sms ? 'The confirmation text is ready to review.' : undefined,
+        kind: logged.escalated ? 'info' : 'success',
+      })
+    } catch (error) {
+      if (sessionRef.current === session) fail('Could not end the call', error)
+    } finally {
+      if (sessionRef.current === session) {
+        sessionRef.current = null
+        setPhase('idle')
+        setTyping(false)
       }
-      if (stopRef.current) return
-      // Mirror the demo flow: a non-escalated scripted call books the first
-      // free slot for the scenario's service before the call is logged.
-      if (!escalated && sc.service) {
-        const slots = await api.slots(sc.service)
-        if (slots.available.length > 0) {
-          const b = await api.bookAppointment('Demo Patient', sc.service, slots.available[0])
-          setMessages((m) => [...m, { speaker: 'Agent', text: b.message }])
+    }
+  }
+
+  function start(nextMode: Mode) {
+    if (pendingSession) {
+      push({ title: 'A call is still closing', desc: 'Try again in a moment.', kind: 'info' })
+      return
+    }
+
+    clear()
+    setMode(nextMode)
+    setPhase('starting')
+    const session: Session = { mode: nextMode, started: false, stopping: false, busy: false, task: Promise.resolve() }
+    const selected = scenarios[scenario]
+    pendingSession = session
+    sessionRef.current = session
+
+    session.task = (async () => {
+      try {
+        const greeting = await api.startCall(CALLER)
+        session.started = true
+        if (session.stopping) return
+        setMessages([{ speaker: 'Agent', text: greeting.reply }])
+        setStep(1)
+        setPhase('running')
+        if (session.mode === 'interactive') return
+
+        for (const text of selected.turns) {
+          await waitForTurn()
+          if (session.stopping) return
+          const turn = await sendTurn(session, text)
+          if (turn.state === 'escalate') return
         }
+
+        if (!session.stopping && selected.service) {
+          const slots = await api.slots(selected.service)
+          if (!session.stopping && slots.available.length) {
+            const booking = await api.bookAppointment('Demo Patient', selected.service, slots.available[0], CALLER)
+            if (sessionRef.current === session) {
+              setMessages((turns) => [...turns, { speaker: 'Agent', text: booking.message }])
+            }
+          }
+        }
+      } catch (error) {
+        if (sessionRef.current === session) fail(session.started ? 'The call was interrupted' : 'Could not start the call', error)
+        session.stopping = true
       }
-      await finishCall()
-    } catch (e) {
-      fail(e)
-      setRunning(false)
-    }
+    })()
+    void session.task.then(() => {
+      if (session.mode === 'scripted' || session.stopping) void finish(session)
+    })
   }
 
-  const startInteractive = async () => {
-    stopRef.current = false
-    endedRef.current = false
-    setRunning(true); setResult(null); setMessages([]); setStep(0); setElapsed(0); setSmsState('idle'); setSmsNote('')
-    try {
-      const start = await api.startCall(CALLER)
-      setMessages([{ speaker: 'Agent', text: start.reply }])
-      setStep(1)
-    } catch (e) {
-      fail(e)
-      setRunning(false)
+  function submitCallerLine(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const session = sessionRef.current
+    if (!session || session.mode !== 'interactive' || !session.started || session.stopping || session.busy) return
+    const line = callerLine.safeParse(customText)
+    if (!line.success) {
+      setFieldError(line.error.issues[0].message)
+      return
     }
-  }
-
-  const sendCustom = async () => {
-    const text = customText.trim()
-    if (!text || !running || typing) return
+    session.busy = true
     setCustomText('')
-    const r = await sendTurn(text)
-    if (r?.state === 'escalate') {
-      push({ title: 'Escalated', desc: 'The agent handed the call to a human.', kind: 'info' })
-    }
+    setFieldError('')
+    session.task = sendTurn(session, line.data)
+      .then((turn) => {
+        if (turn.state === 'escalate' && sessionRef.current === session) {
+          push({ title: 'Call escalated', desc: 'The receptionist handed the call to a person.', kind: 'info' })
+        }
+      })
+      .catch((error: unknown) => { if (sessionRef.current === session) fail('Could not send the caller’s line', error) })
+      .finally(() => { session.busy = false })
   }
 
-  const endNow = async () => {
-    if (!running) return
-    stopRef.current = true
-    await finishCall()
-  }
-
-  const reset = () => {
-    stopRef.current = true
-    setRunning(false); setTyping(false); setMessages([]); setResult(null); setStep(0); setElapsed(0); setSmsState('idle'); setSmsNote('')
-  }
-
-  const copySms = async () => {
-    if (!result?.follow_up_sms) return
+  async function copySms(text: string) {
     try {
-      await navigator.clipboard.writeText(result.follow_up_sms)
+      await navigator.clipboard.writeText(text)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* clipboard unavailable — the text is still visible */ }
-  }
-
-  const sendSms = async () => {
-    if (!result?.follow_up_sms) return
-    setSmsState('sending')
-    try {
-      const r = await api.notifySms(CALLER, result.follow_up_sms)
-      setSmsState('done')
-      setSmsNote(r.sent
-        ? `Sent via Twilio${r.sid ? ` (SID ${r.sid})` : ''}.`
-        : 'Draft recorded — nothing was sent. The backend is in demo mode (no Twilio keys configured), so this stays a preview.')
-      push({ title: r.sent ? 'SMS sent' : 'SMS preview only', desc: r.sent ? 'The confirmation text was sent.' : 'Demo mode — no text was actually sent.', kind: r.sent ? 'success' : 'info' })
-    } catch (e) {
-      setSmsState('error')
-      setSmsNote(e instanceof Error ? e.message : 'Could not reach the API.')
+    } catch {
+      push({ title: 'Could not copy the text', desc: 'Select the draft to copy it manually.', kind: 'error' })
     }
   }
+
+  async function sendSms(text: string) {
+    setSmsState('sending')
+    setSmsNote('')
+    try {
+      const response = await api.notifySms(result?.caller || CALLER, text)
+      if (!response.sent && response.error) throw new Error(response.error)
+      setSmsState(response.sent ? 'sent' : 'recorded')
+      setSmsNote(response.sent ? 'Confirmation text sent.' : 'Preview only. No text was sent.')
+    } catch (error) {
+      setSmsState('error')
+      setSmsNote(error instanceof Error ? error.message : 'Could not send the text.')
+    }
+  }
+
+  const sms = result?.follow_up_sms
+  const smsBusy = smsState === 'sending'
+  const smsLabel = { idle: 'Send SMS', sending: 'Sending…', sent: 'Sent', recorded: 'Preview only', error: 'Retry SMS' }[smsState]
 
   return (
-    <div className="space-y-6">
+    <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Live call</h1>
-          <p className="text-sm text-muted-foreground">Talk to the agent turn by turn — every reply comes from the live backend, and nothing is really dialled or texted.</p>
-        </div>
-        {running && (
-          <Badge tone="success">
-            <span className="relative mr-1.5 flex h-2 w-2"><span className="relative h-2 w-2 rounded-full bg-emerald-500" /></span>
-            Live · <Clock3 className="ml-1 mr-0.5 h-3 w-3" />{fmtElapsed(elapsed)}
-          </Badge>
-        )}
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div><CardTitle>Incoming call</CardTitle><CardDescription>Sunrise Dental Clinic · +91 95737 19115</CardDescription></div>
-            {running ? <Badge tone="success">On the line</Badge> : <Badge>Idle</Badge>}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Scenario</div>
-            <div className="flex flex-wrap gap-2" role="group" aria-label="Demo scenario">
-              {SCENARIOS.map((s, i) => (
-                <Button key={s.label} variant={scenario === i ? 'default' : 'outline'} size="sm" disabled={running} onClick={() => setScenario(i)} aria-pressed={scenario === i}>
-                  {s.label}
-                </Button>
+      <PageHeading title="Live call" description="Simulate a call with the receptionist. No phone call is placed." />
+      <div className="live-grid">
+        <div className="live-controls">
+          <section className="ruled-section">
+            <SectionHeading title="Scenario" />
+            <fieldset className="scenario-list" disabled={active}>
+              <legend className="sr-only">Choose a scenario</legend>
+              {scenarios.map(({ label }, index) => (
+                <label key={label}><input type="radio" name="scenario" checked={scenario === index} onChange={() => setScenario(index)} />{label}</label>
               ))}
+            </fieldset>
+            <p className="muted scenario-description">{scenarios[scenario].description}</p>
+            <div className="live-actions">
+              <Button onClick={() => start('scripted')} disabled={active || smsBusy}><Play size={16} aria-hidden="true" />Run scenario</Button>
+              <Button variant="outline" onClick={() => start('interactive')} disabled={active || smsBusy}><MessageSquare size={16} aria-hidden="true" />Talk to the agent</Button>
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">{SCENARIOS[scenario].desc}</p>
-          </div>
+          </section>
+          <section className="ruled-section progress-section">
+            <SectionHeading title="Call progress" />
+            <ol className="progress-list">
+              {STEPS.map((label, index) => (
+                <li key={label} aria-current={active && step === index ? 'step' : undefined}>
+                  <span aria-hidden="true">{index < step && <Check size={15} />}</span>{label}
+                  {index < step && <span className="sr-only"> complete</span>}
+                </li>
+              ))}
+            </ol>
+          </section>
+        </div>
 
-          {/* Step indicator — driven by the agent's real state each turn;
-              the connector fills as steps complete. */}
-          <div className="flex flex-wrap items-center gap-2" aria-label="Call progress">
-            {STEPS.map((s, i) => (
-              <div key={s} className="flex items-center gap-2">
-                <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-all duration-300 ${i < step ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30' : i === step && running ? 'bg-primary text-primary-foreground shadow-md shadow-primary/30 ring-4 ring-primary/15' : 'bg-muted text-muted-foreground'}`}>
-                  {i < step ? <Check className="h-4 w-4" /> : i + 1}
-                </div>
-                <span className={`text-xs font-medium ${i <= step ? 'text-foreground' : 'text-muted-foreground'}`}>{s}</span>
-                {i < STEPS.length - 1 && <div className={`h-0.5 w-6 rounded-full transition-colors duration-300 ${i < step ? 'bg-emerald-500' : 'bg-border'}`} />}
+        <div className="live-conversation">
+          <section className="desk-sheet" aria-labelledby="conversation">
+            <header className="live-heading">
+              <div><h2 id="conversation">Conversation</h2><p className="muted">{CALLER}</p></div>
+              <div className="live-state">
+                <Badge dot tone={phase === 'running' ? 'success' : 'default'}>{phase === 'starting' ? 'Connecting' : phase === 'ending' ? 'Ending call' : active ? 'On the line' : result ? 'Call ended' : 'Ready'}</Badge>
+                {(active || result) && <span className="data-text muted" aria-label="Elapsed time">{elapsedLabel(elapsed)}</span>}
               </div>
-            ))}
-          </div>
+            </header>
 
-          <div className="flex flex-wrap gap-3">
-            <Button onClick={runScripted} disabled={running} size="lg">
-              <Play className="h-4 w-4" />{running ? 'Call in progress…' : 'Answer & run scenario'}
-            </Button>
-            <Button variant="outline" size="lg" disabled={running} onClick={startInteractive}>
-              <MessageSquareText className="h-4 w-4" />Talk to the agent yourself
-            </Button>
-            <Button variant="outline" size="lg" disabled={!running} onClick={endNow}><PhoneOff className="h-4 w-4" />End call</Button>
-            {(messages.length > 0 || result) && !running && (
-              <Button variant="ghost" size="lg" onClick={reset}>Clear</Button>
-            )}
-          </div>
+            <div ref={transcript} className="live-transcript" role="log" aria-label="Conversation turns" tabIndex={messages.length ? 0 : undefined}>
+              {messages.length ? <Transcript turns={messages} animate /> : (
+                <EmptyState title={phase === 'starting' ? 'Connecting to the receptionist…' : phase === 'ending' ? 'Closing the call…' : 'No call in progress'} description={active ? 'The conversation will appear here.' : 'Run a scenario or type your own caller lines.'} />
+              )}
+              {typing && <p className="reply-pending muted" role="status">Waiting for the receptionist…</p>}
+            </div>
 
-          {/* Live transcript — chat bubbles appear as each turn lands. */}
-          <div ref={scrollRef} className="thin-scroll max-h-[480px] space-y-3 overflow-y-auto rounded-2xl border bg-muted/30 p-4 shadow-inner" aria-live="polite">
-            {messages.length === 0 && !typing && (
-              <p className="text-sm text-muted-foreground">No call yet. Run a scenario to watch the agent work, or talk to it yourself and type the caller&apos;s lines.</p>
+            {active && mode === 'interactive' && (
+              <form className="caller-form" onSubmit={submitCallerLine} noValidate>
+                <label htmlFor="caller-line" className="field-label">Caller message</label>
+                <div>
+                  <input id="caller-line" ref={composer} value={customText} onChange={(event) => { setCustomText(event.target.value); setFieldError('') }}
+                    placeholder="Type what the caller says" aria-invalid={Boolean(fieldError)} aria-describedby={fieldError ? 'caller-error' : undefined} disabled={phase !== 'running'} />
+                  <Button type="submit" disabled={phase !== 'running' || typing}><Send size={16} aria-hidden="true" />Send</Button>
+                </div>
+                {fieldError && <p className="field-error" id="caller-error" role="alert">{fieldError}</p>}
+              </form>
             )}
-            {messages.map((m, i) => (
-              <motion.div key={i} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={`flex ${m.speaker === 'Caller' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.speaker === 'Caller' ? 'rounded-br-sm bg-primary text-primary-foreground shadow-sm' : 'rounded-bl-sm border bg-card shadow-soft'}`}>
-                  <div className="mb-0.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide opacity-70">
-                    {m.speaker === 'Caller' ? 'Caller' : 'Agent'}
-                    {m.intent && <span className="rounded-full bg-black/10 px-1.5 py-0.5 normal-case dark:bg-white/10">{m.intent}</span>}
+            {(active || messages.length > 0 || result) && (
+              <footer className="conversation-footer">
+                {active ? (
+                  <Button variant="outline" disabled={phase === 'ending'} onClick={() => { if (sessionRef.current) void finish(sessionRef.current) }}><PhoneOff size={16} aria-hidden="true" />End call</Button>
+                ) : <Button variant="outline" disabled={smsBusy} onClick={clear}>Clear conversation</Button>}
+              </footer>
+            )}
+          </section>
+
+          {result && (
+            <section className="ruled-section result-section turn-enter">
+              <SectionHeading title="Call summary" />
+              <div className="call-flags">
+                {result.outcome && <Badge tone={result.escalated ? 'danger' : 'default'}>{recordLabel(result.outcome)}</Badge>}
+                {result.urgency && <Badge tone={result.urgency === 'high' ? 'danger' : result.urgency === 'medium' ? 'warning' : 'default'}>{recordLabel(result.urgency)} urgency</Badge>}
+                {result.sentiment && <Badge tone={result.sentiment === 'negative' ? 'danger' : result.sentiment === 'positive' ? 'success' : 'default'}>{recordLabel(result.sentiment)} sentiment</Badge>}
+              </div>
+              {result.summary && <p className="reading">{result.summary}</p>}
+              {result.transcript && <details><summary>Full stored transcript</summary><pre className="reading stored-transcript">{result.transcript}</pre></details>}
+
+              {sms && (
+                <section className="sms-preview" aria-label="SMS preview">
+                  <header><h3>SMS preview</h3><span className="muted">To {result.caller || CALLER}</span></header>
+                  <p className="reading">{sms}</p>
+                  <p className="muted">{[...sms].length} characters · {smsSegments(sms)} estimated segment{smsSegments(sms) === 1 ? '' : 's'}</p>
+                  <div className="sms-actions">
+                    <Button variant="outline" onClick={() => void copySms(sms)}><Copy size={16} aria-hidden="true" />{copied ? 'Copied' : 'Copy text'}</Button>
+                    <Button disabled={smsBusy || smsState === 'sent' || smsState === 'recorded'} onClick={() => void sendSms(sms)}><Send size={16} aria-hidden="true" />{smsLabel}</Button>
                   </div>
-                  {m.text}
-                </div>
-              </motion.div>
-            ))}
-            {typing && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl rounded-bl-sm border bg-card px-4 py-3 shadow-soft" aria-label="Agent is typing">
-                  <span className="flex gap-1">
-                    {[0, 1, 2].map((d) => (
-                      <span key={d} className="h-2 w-2 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: `${d * 150}ms` }} />
-                    ))}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Free-text caller line — only while a call is live. */}
-          {running && (
-            <div className="flex gap-2">
-              <input
-                value={customText}
-                onChange={(e) => setCustomText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') void sendCustom() }}
-                disabled={typing}
-                placeholder="Type what the caller says… e.g. I'd like to cancel my appointment"
-                aria-label="Caller message"
-                className="h-10 flex-1 rounded-md border bg-background px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-              />
-              <Button onClick={() => void sendCustom()} disabled={typing || !customText.trim()}><Send className="h-4 w-4" />Send</Button>
-            </div>
+                  <p className="muted">This sends the text when SMS delivery is configured. Otherwise, it returns a preview.</p>
+                  {smsNote && <p className={smsState === 'error' ? 'field-error' : 'muted'} role={smsState === 'error' ? 'alert' : 'status'}>{smsNote}</p>}
+                </section>
+              )}
+            </section>
           )}
-          <p className="text-xs leading-relaxed text-muted-foreground">Booking flow: “I’d like to book a teeth cleaning” → hours → price → the agent books the first free slot and drafts the SMS confirmation. Demo only — no real call is placed and no SMS is sent unless you press Send below.</p>
-        </CardContent>
-      </Card>
-
-      <AnimatePresence>
-        {result && (
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-center gap-2">
-                  <CardTitle>Call summary</CardTitle>
-                  <Badge tone={result.escalated ? 'danger' : 'success'}>{result.outcome}</Badge>
-                  <Badge tone={result.urgency === 'high' ? 'danger' : 'default'}>{result.urgency} urgency</Badge>
-                  <Badge>{result.sentiment} sentiment</Badge>
-                </div>
-                <CardDescription>{result.summary}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {result.follow_up_sms && (
-                  <div>
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">SMS preview — check before sending</div>
-                    {/* Phone-style preview of the exact draft text. */}
-                    <div className="mx-auto max-w-sm rounded-[2.5rem] border bg-background p-2.5 shadow-lift ring-1 ring-black/5 dark:ring-white/10">
-                      <div className="rounded-[2rem] bg-muted/60 px-4 pb-4 pt-2">
-                        <div className="mx-auto mb-2.5 h-1.5 w-16 rounded-full bg-foreground/15" aria-hidden />
-                        <div className="mb-2 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
-                          <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
-                          <span className="flex items-center gap-1" aria-hidden><Signal className="h-3 w-3" /><Wifi className="h-3 w-3" /><BatteryMedium className="h-3.5 w-3.5" /></span>
-                        </div>
-                        <div className="mb-2 flex items-center gap-2 text-xs font-semibold"><Phone className="h-3.5 w-3.5" />Sunrise Dental Clinic</div>
-                        <p className="whitespace-pre-wrap text-sm leading-relaxed">{result.follow_up_sms}</p>
-                        <p className="mt-2 text-right text-[11px] text-muted-foreground">{result.follow_up_sms.length} characters · {smsSegments(result.follow_up_sms)} SMS segment{smsSegments(result.follow_up_sms) > 1 ? 's' : ''}</p>
-                      </div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Button variant="outline" size="sm" onClick={() => void copySms()}>
-                        <Copy className="h-4 w-4" />{copied ? 'Copied' : 'Copy text'}
-                      </Button>
-                      <Button size="sm" disabled={smsState === 'sending' || smsState === 'done'} onClick={() => void sendSms()}>
-                        {smsState === 'sending' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        {smsState === 'done' ? 'Sent / recorded' : 'Send SMS'}
-                      </Button>
-                      {smsNote && <span className="text-xs text-muted-foreground">{smsNote}</span>}
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">The backend sends only when Twilio keys are configured; in demo mode this records the draft and sends nothing.</p>
-                  </div>
-                )}
-                {result.transcript && (
-                  <details>
-                    <summary className="cursor-pointer text-sm font-medium">Full stored transcript</summary>
-                    <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-muted/60 p-4 text-sm leading-relaxed">{result.transcript}</pre>
-                  </details>
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+        </div>
+      </div>
+    </>
   )
 }

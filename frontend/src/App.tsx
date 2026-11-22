@@ -1,33 +1,40 @@
-import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
 import Layout from './components/Layout'
+import { ActionLink, PageHeading } from './components/Desk'
 import { ThemeProvider } from './components/ThemeProvider'
 import Overview from './pages/Overview'
 import Calls from './pages/Calls'
 import Appointments from './pages/Appointments'
 import LiveCall from './pages/LiveCall'
-import { Card, CardContent } from './components/ui/card'
+import Settings from './pages/Settings'
+
+const pageTitles: Record<string, string> = {
+  '/': 'Front desk', '/calls': 'Calls', '/appointments': 'Appointments', '/live': 'Live call', '/settings': 'Settings',
+}
+
+function DocumentTitle() {
+  const { pathname } = useLocation()
+  useEffect(() => { document.title = `${pageTitles[pathname] ?? 'Page not found'} | Voice Receptionist` }, [pathname])
+  return null
+}
 
 function NotFound() {
-  return (
-    <Card>
-      <CardContent className="p-6">
-        <h1 className="text-xl font-bold">Page not found</h1>
-        <p className="mt-1 text-sm text-muted-foreground">That page does not exist. <Link to="/" className="font-medium text-primary underline underline-offset-2">Back to Overview</Link></p>
-      </CardContent>
-    </Card>
-  )
+  return <PageHeading title="Page not found" description="Check the address or go back to the front desk."><ActionLink to="/">Back to Overview</ActionLink></PageHeading>
 }
 
 export default function App() {
   return (
     <ThemeProvider>
       <BrowserRouter>
+        <DocumentTitle />
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={<Overview />} />
             <Route path="/calls" element={<Calls />} />
             <Route path="/appointments" element={<Appointments />} />
             <Route path="/live" element={<LiveCall />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
