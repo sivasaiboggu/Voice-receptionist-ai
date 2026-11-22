@@ -1,14 +1,26 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
+import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from 'react'
 
 type Theme = 'light' | 'dark'
-const Ctx = createContext<{ theme: Theme; toggle: () => void }>({ theme: 'light', toggle: () => {} })
+const key = 'vr-theme'
+const ThemeContext = createContext<{ theme: Theme; setTheme: (theme: Theme) => void }>({ theme: 'light', setTheme: () => {} })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('vr-theme') as Theme) || 'light')
-  useEffect(() => {
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      const saved = localStorage.getItem(key)
+      if (saved === 'dark' || saved === 'light') return saved
+    } catch {
+      // Appearance still works when storage is blocked.
+    }
+    return 'light'
+  })
+
+  useLayoutEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
-    localStorage.setItem('vr-theme', theme)
+    try { localStorage.setItem(key, theme) } catch { /* Storage is optional. */ }
   }, [theme])
-  return <Ctx.Provider value={{ theme, toggle: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')) }}>{children}</Ctx.Provider>
+
+  return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>
 }
-export const useTheme = () => useContext(Ctx)
+
+export const useTheme = () => useContext(ThemeContext)

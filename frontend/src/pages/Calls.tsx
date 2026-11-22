@@ -1,153 +1,166 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, PhoneCall, RefreshCw, Search, X } from 'lucide-react'
-import { api, Call } from '../lib/api'
-import EmptyState from '../components/EmptyState'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, ChevronRight, Search, X } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { ActionLink, EmptyState, LoadError, LoadingRows, PageHeading } from '../components/Desk'
+import { useDesk } from '../components/Layout'
+import { parseTranscript, Transcript } from '../components/Transcript'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Skeleton } from '../components/ui/skeleton'
+import { api, type Call } from '../lib/api'
+import { callDate, clockTime, formatDate, recordLabel } from '../lib/utils'
+
+function CallFlags({ call }: { call: Call }) {
+  return (
+    <div className="call-flags">
+      {call.urgency && <Badge tone={call.urgency === 'high' ? 'danger' : call.urgency === 'medium' ? 'warning' : 'default'}>{recordLabel(call.urgency)} urgency</Badge>}
+      {call.sentiment && <Badge tone={call.sentiment === 'negative' ? 'danger' : call.sentiment === 'positive' ? 'success' : 'default'}>{recordLabel(call.sentiment)}</Badge>}
+      {call.escalated ? <Badge tone="danger">Escalated</Badge> : null}
+    </div>
+  )
+}
 
 export default function Calls() {
-  const navigate = useNavigate()
-  const [calls, setCalls] = useState<Call[]>([])
-  const [loading, setLoading] = useState(true)
+  const { health } = useDesk()
+  const zone = health?.timezone
+  const [calls, setCalls] = useState<Call[] | null>(null)
   const [error, setError] = useState('')
-  const [open, setOpen] = useState<number | null>(null)
-  // Search + filters — all client-side, over the real call log.
+  const [attempt, setAttempt] = useState(0)
+  const [params, setParams] = useSearchParams()
+  const callId = params.get('call')
+  const detail = useRef<HTMLElement>(null)
+  const detailHeading = useRef<HTMLHeadingElement>(null)
+  const search = useRef<HTMLInputElement>(null)
+  const lastSelection = useRef<HTMLAnchorElement | null>(null)
+  const restoreLogFocus = useRef(false)
   const [query, setQuery] = useState('')
   const [outcome, setOutcome] = useState('all')
   const [urgency, setUrgency] = useState('all')
   const [escalatedOnly, setEscalatedOnly] = useState(false)
+  const filtersActive = Boolean(query.trim() || outcome !== 'all' || urgency !== 'all' || escalatedOnly)
+  const queryText = query.trim().toLowerCase()
+  const outcomes = [...new Set(calls?.map((call) => call.outcome))].sort()
+  const filtered = calls?.filter((call) => (
+    (outcome === 'all' || call.outcome === outcome) && (urgency === 'all' || call.urgency === urgency) &&
+    (!escalatedOnly || call.escalated) &&
+    (!queryText || `${call.caller} ${call.summary} ${call.transcript ?? ''}`.toLowerCase().includes(queryText))
+  )) ?? []
+  const activeCall = callId === null
+    ? filtered[0]
+    : (filtersActive ? filtered : calls)?.find((call) => String(call.id) === callId)
+  const started = callDate(activeCall?.started_at)
+  const mobileDetail = callId !== null && Boolean(activeCall)
 
-  const outcomes = useMemo(() => [...new Set(calls.map((c) => c.outcome))].sort(), [calls])
+  useEffect(() => {
+    let current = true
+    api.calls()
+      .then((value) => { if (current) setCalls(value) })
+      .catch((failure: Error) => { if (current) setError(failure.message) })
+    return () => { current = false }
+  }, [attempt])
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return calls.filter((c) => {
-      if (outcome !== 'all' && c.outcome !== outcome) return false
-      if (urgency !== 'all' && c.urgency !== urgency) return false
-      if (escalatedOnly && !c.escalated) return false
-      if (q && !`${c.caller} ${c.summary} ${c.transcript ?? ''}`.toLowerCase().includes(q)) return false
-      return true
-    })
-  }, [calls, query, outcome, urgency, escalatedOnly])
+  useEffect(() => {
+    detail.current?.scrollTo(0, 0)
+    if (mobileDetail && window.matchMedia('(max-width: 63.99rem)').matches) {
+      detailHeading.current?.focus()
+    } else if (restoreLogFocus.current) {
+      restoreLogFocus.current = false
+      const row = lastSelection.current
+      if (row?.isConnected) row.focus()
+      else search.current?.focus()
+    }
+  }, [mobileDetail, activeCall?.id])
 
-  const filtersActive = query.trim() !== '' || outcome !== 'all' || urgency !== 'all' || escalatedOnly
-  const clearFilters = () => { setQuery(''); setOutcome('all'); setUrgency('all'); setEscalatedOnly(false) }
-
-  const load = () => {
-    setLoading(true); setError('')
-    api.calls().then(setCalls).catch((e: Error) => setError(e.message)).finally(() => setLoading(false))
+  function clearFilters() {
+    setQuery('')
+    setOutcome('all')
+    setUrgency('all')
+    setEscalatedOnly(false)
+    search.current?.focus()
   }
-  useEffect(load, [])
 
-  if (loading) return (
-    <div className="space-y-4">
-      <div><Skeleton className="h-8 w-40" /><Skeleton className="mt-2 h-4 w-80" /></div>
-      {[0, 1, 2].map((i) => <Skeleton key={i} className="h-20" />)}
-    </div>
-  )
-  if (error) return (
-    <div className="space-y-4">
-      <div><h1 className="text-2xl font-bold tracking-tight">Calls</h1><p className="text-sm text-muted-foreground">Every call, with transcript, summary, sentiment and urgency.</p></div>
-      <Card>
-        <CardContent className="flex flex-col items-start gap-3 p-6">
-          <div className="flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400"><AlertTriangle className="h-4 w-4" />Could not load calls</div>
-          <p className="text-sm leading-relaxed text-muted-foreground">{error}</p>
-          <Button variant="outline" size="sm" onClick={load}><RefreshCw className="h-4 w-4" />Try again</Button>
-        </CardContent>
-      </Card>
-    </div>
-  )
+  function returnToLog() {
+    restoreLogFocus.current = true
+    setParams({}, { replace: true })
+  }
+
+  const heading = <PageHeading title="Calls" description="Find a call and read what was said." />
+  if (error) return <>{heading}<LoadError title="Could not load calls" message={error} retry={() => { setError(''); setAttempt(attempt + 1) }} /></>
+  if (!calls) return <>{heading}<LoadingRows label="Loading calls…" /></>
 
   return (
-    <div className="space-y-4">
-      <div><h1 className="text-2xl font-bold tracking-tight">Calls</h1><p className="text-sm text-muted-foreground">Every call, with transcript, summary, sentiment and urgency. Select a call to read the full transcript. Demo data — every entry is a simulated call, not a real patient.</p></div>
-
-      {/* Search + filters */}
-      <Card>
-        <CardContent className="flex flex-wrap items-center gap-3 p-4">
-          <div className="relative min-w-52 flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search calls…"
-              aria-label="Search calls"
-              className="h-10 w-full rounded-md border bg-background pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          </div>
-          <select value={outcome} onChange={(e) => setOutcome(e.target.value)} aria-label="Filter by outcome" className="h-10 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <option value="all">All outcomes</option>
-            {outcomes.map((o) => <option key={o} value={o}>{o}</option>)}
-          </select>
-          <select value={urgency} onChange={(e) => setUrgency(e.target.value)} aria-label="Filter by urgency" className="h-10 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <option value="all">Any urgency</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input type="checkbox" checked={escalatedOnly} onChange={(e) => setEscalatedOnly(e.target.checked)} className="h-4 w-4 accent-primary" />
-            Escalated only
+    <div className={mobileDetail ? 'calls-page mobile-detail' : 'calls-page'}>
+      {heading}
+      <div className="call-filter-area">
+        <div className="call-filters" role="search" aria-label="Filter calls">
+          <label className="search-field">
+            <span className="field-label">Search</span>
+            <span><Search size={17} aria-hidden="true" /><input ref={search} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Caller, summary or transcript" /></span>
           </label>
-          {filtersActive && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}><X className="h-4 w-4" />Clear</Button>
-          )}
-          <span className="ml-auto text-xs text-muted-foreground">Showing {filtered.length} of {calls.length} calls</span>
-        </CardContent>
-      </Card>
-
-      {calls.length === 0 && (
-        <EmptyState icon={PhoneCall} title="No calls yet" desc="Calls appear here as soon as the agent handles one. Try a demo call — it books an appointment and logs the whole conversation." action={<Button size="sm" onClick={() => navigate('/live')}>Run a demo call</Button>} />
-      )}
-      {calls.length > 0 && filtered.length === 0 && (
-        <EmptyState icon={Search} title="No calls match" desc="Try a different search term or clear the filters — the calls are still there." action={<Button size="sm" variant="outline" onClick={clearFilters}>Clear filters</Button>} />
-      )}
-      {filtered.map((c) => (
-        <div key={c.id}>
-          <Card className="cursor-pointer transition-colors hover:bg-accent/50" onClick={() => setOpen(open === c.id ? null : c.id)}>
-            <CardHeader>
-              {/* See Overview: the row flex must be an inner div, not on
-                  the CardHeader — its base `flex-col` beats `flex-row`. */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <CardTitle className="text-base">{c.caller} <span className="font-normal text-muted-foreground">— {c.summary}</span></CardTitle>
-                <div className="flex flex-wrap gap-2">
-                  <Badge tone={c.urgency === 'high' ? 'danger' : c.urgency === 'medium' ? 'warning' : 'default'}>{c.urgency}</Badge>
-                  <Badge tone={c.sentiment === 'negative' ? 'danger' : c.sentiment === 'positive' ? 'success' : 'default'}>{c.sentiment}</Badge>
-                  {c.escalated ? <Badge tone="danger">Escalated</Badge> : null}
-                </div>
-              </div>
-            </CardHeader>
-            {open === c.id && (
-              <CardContent>
-                {c.transcript ? (
-                  <div className="space-y-2 rounded-xl border bg-muted/50 p-4 shadow-inner">
-                    {c.transcript.split('\n').filter(Boolean).map((line, i) => {
-                      const isCaller = line.startsWith('Caller:')
-                      const text = line.replace(/^(Agent|Caller):\s?/, '')
-                      return (
-                        <div key={i} className={`flex gap-2 text-sm leading-relaxed ${isCaller ? 'border-l-2 border-primary/60 pl-3' : 'pl-3'}`}>
-                          <span className={`w-12 shrink-0 text-xs font-semibold uppercase tracking-wide ${isCaller ? 'text-primary' : 'text-muted-foreground'}`}>{isCaller ? 'Caller' : 'Agent'}</span>
-                          <span className="min-w-0">{text}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="rounded-xl border bg-muted/50 p-4 text-sm text-muted-foreground">No transcript was stored for this call.</p>
-                )}
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Outcome: <b className="text-foreground">{c.outcome}</b>
-                  {c.escalated ? ' · Escalated to a human' : ''}
-                  {c.started_at ? <> · <span className="font-mono text-[13px]">{new Date(c.started_at).toLocaleString('en-IN')}</span></> : ''}
-                </p>
-              </CardContent>
-            )}
-          </Card>
+          <div className="filter-field"><label htmlFor="call-outcome" className="field-label">Outcome</label>
+            <select id="call-outcome" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
+              <option value="all">All outcomes</option>
+              {outcomes.map((value) => <option key={value} value={value}>{recordLabel(value)}</option>)}
+            </select>
+          </div>
+          <div className="filter-field"><label htmlFor="call-urgency" className="field-label">Urgency</label>
+            <select id="call-urgency" value={urgency} onChange={(event) => setUrgency(event.target.value)}>
+              <option value="all">Any urgency</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option>
+            </select>
+          </div>
+          <label className="checkbox-field"><input type="checkbox" checked={escalatedOnly} onChange={(event) => setEscalatedOnly(event.target.checked)} />Escalated only</label>
+          {filtersActive && <Button variant="ghost" onClick={clearFilters}><X size={16} aria-hidden="true" />Clear filters</Button>}
         </div>
-      ))}
+      </div>
+
+      <div className="calls-grid">
+        <section className="call-register" aria-labelledby="call-log">
+          <div className="section-heading">
+            <h2 id="call-log">Call log</h2><span className="muted" role="status">{filtered.length} of {calls.length}</span>
+          </div>
+          {!calls.length ? (
+            <EmptyState title="No calls yet" description="A completed call will appear here with its transcript."><ActionLink to="/live">Run a demo call</ActionLink></EmptyState>
+          ) : !filtered.length ? (
+            <EmptyState title="No matching calls" description="Try a different search or clear the filters." />
+          ) : (
+            <ul className="register">
+              {filtered.map((call) => {
+                const time = callDate(call.started_at)
+                const selected = activeCall?.id === call.id
+                return (
+                  <li key={call.id}>
+                    <Link className={`register-row call-list-row${selected ? ' selected-row' : ''}${selected && callId === null ? ' auto-selected' : ''}`} to={`?call=${call.id}`}
+                      onClick={(event) => { lastSelection.current = event.currentTarget }} aria-current={selected && callId !== null ? 'true' : undefined}>
+                      <span className="register-mark data-text muted">{time && <time dateTime={time.toISOString()}>{clockTime(time, zone)}<small>{formatDate(time, { day: 'numeric', month: 'short' }, zone)}</small></time>}</span>
+                      <div className="call-list-summary"><strong>{call.caller}</strong><p className="muted">{call.summary}</p><CallFlags call={call} /></div>
+                      <ChevronRight size={16} className="row-arrow" aria-hidden="true" />
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+
+        <section className="call-detail desk-sheet" aria-label="Call transcript" ref={detail} tabIndex={0}>
+          {mobileDetail && <Button variant="ghost" className="back-to-log" onClick={returnToLog}><ArrowLeft size={16} aria-hidden="true" />Back to calls</Button>}
+          {activeCall ? (
+            <>
+              <header className="detail-heading">
+                <h2 ref={detailHeading} tabIndex={-1}>{activeCall.caller}</h2>
+                {started && <p className="data-text muted"><time dateTime={started.toISOString()}>{formatDate(started, { day: 'numeric', month: 'long', year: 'numeric' }, zone)} · {clockTime(started, zone)}</time></p>}
+                {activeCall.summary && <p className="reading">{activeCall.summary}</p>}
+                <CallFlags call={activeCall} />
+              </header>
+              <div className="detail-outcome"><strong>Outcome</strong><span>{recordLabel(activeCall.outcome)}</span></div>
+              <h3 className="transcript-title">Transcript</h3>
+              {activeCall.transcript ? <Transcript turns={parseTranscript(activeCall.transcript)} /> : <p className="muted">No transcript was stored for this call.</p>}
+            </>
+          ) : (
+            <EmptyState title={callId && !filtersActive ? 'Call unavailable' : 'No transcript selected'} description={callId && !filtersActive ? 'Choose an entry from the call log.' : 'Select a call to read its transcript.'} />
+          )}
+        </section>
+      </div>
+      {callId !== null && !activeCall && !filtersActive && <p className="mobile-unavailable" role="status">This call is unavailable. Choose a call from the log.</p>}
     </div>
   )
 }

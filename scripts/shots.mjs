@@ -1,45 +1,15 @@
-// Real Chrome renders for review: desktop 1280px + phone 390px.
-// Run: node scripts/shots.mjs   (backend must be up on :8001, and the
-// frontend built with VITE_API_URL=http://localhost:8001)
-// Writes docs/visual-proof-0.3.7/*.png. Modelled on the kirana recipe
-// for this VM: Hatch Chrome needs a WebGL domain-policy file just to
-// start, and it blocks navigation to http://127.0.0.1, so pages load
-// over file:// with --allow-file-access-from-files. The production
-// build calls the API at localhost:8001, and a file:// page has no
-// Origin header so CORS fails — --disable-web-security is a
-// TEST-HARNESS flag here only, never a product change.
-import { spawn } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
-import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Capture the dashboard from its local preview server. Use a disposable
+// demo backend when passing --run-demo, which creates one call and booking.
+import { spawn } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url)) + '/..';
-const OUT = path.join(ROOT, 'docs', 'visual-proof-0.3.7');
-fs.mkdirSync(OUT, { recursive: true });
-const CHROME = '/opt/meta-chromium/chrome';
-const DEBUG_PORT = 9233; // not 9227: the AI SDR agent's Chrome holds that port on this VM
-const DIST = `file://${ROOT}/frontend/dist/index.html`;
-
-function chromeArgs(firstUrl) {
-  const policy = 'hatch-webgl-allowed-domains-v1\nexample.com\n';
-  const file = path.join(os.tmpdir(), 'vr-webgl-policy.txt');
-  fs.writeFileSync(file, policy);
-  const sha = createHash('sha256').update(policy).digest('hex');
-  return [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-    '--allow-file-access-from-files',
-    '--disable-web-security', // test harness only: file:// -> localhost:8001 fetch
-    `--user-data-dir=${fs.mkdtempSync(path.join(os.tmpdir(), 'vr-chrome-'))}`,
-    `--hatch-webgl-allowed-domains-file=${file}`,
-    `--hatch-webgl-allowed-domains-sha256=${sha}`,
-    `--remote-debugging-port=${DEBUG_PORT}`,
-    '--window-size=1280,900',
-    firstUrl,
-  ];
-}
+const url = new URL(process.env.RECEPTION_SCREENSHOT_URL || 'http://localhost:4173')
+const out = path.resolve(process.env.RECEPTION_SCREENSHOT_DIR || 'work/reception-screenshots')
+const chromePath = process.env.CHROME_PATH || 'chromium'
+const runDemo = process.argv.includes('--run-demo')
 
 class Cdp {
   constructor(wsUrl) {
@@ -86,13 +56,13 @@ class Cdp {
   }
   async shot(name, beyondViewport = true) {
     const { data } = await this.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: beyondViewport });
-    fs.writeFileSync(path.join(OUT, name), Buffer.from(data, 'base64'));
+    fs.writeFileSync(path.join(out, name), Buffer.from(data, 'base64'));
     console.log('wrote', name);
   }
   async waitFor(fnText, timeoutMs = 20000) {
     const start = Date.now();
     for (;;) {
-      if (await this.eval(fnText)) return;
+      if (await this.eval(`Boolean(${fnText})`)) return;
       if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for: ${fnText}`);
       await delay(250);
     }
@@ -100,122 +70,95 @@ class Cdp {
 }
 
 async function main() {
-  const chrome = spawn(CHROME, chromeArgs(DIST));
+  fs.mkdirSync(out, { recursive: true })
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'reception-shots-'))
+  const portFile = path.join(profile, 'DevToolsActivePort')
+  const args = [
+    '--headless', '--disable-dev-shm-usage', '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+  ]
+  if (process.env.CHROME_NO_SANDBOX === '1') args.push('--no-sandbox')
+  const chrome = spawn(chromePath, [...args, 'about:blank'], { stdio: 'ignore' })
+  let launchError
+  chrome.on('error', (error) => { launchError = error })
+  let cdp
   try {
-    let wsUrl = null;
-    for (let i = 0; i < 50; i++) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
-        const targets = await res.json();
-        const page = targets.find((t) => t.type === 'page');
-        if (page) { wsUrl = page.webSocketDebuggerUrl; break; }
-      } catch { /* not up yet */ }
-      await delay(200);
+    let page
+    for (let attempt = 0; attempt < 60 && !page; attempt++) {
+      if (launchError) throw launchError
+      if (fs.existsSync(portFile)) {
+        const [port] = fs.readFileSync(portFile, 'utf8').split('\n')
+        const response = await fetch(`http://127.0.0.1:${port}/json/list`)
+        page = (await response.json()).find((target) => target.type === 'page')
+      }
+      if (!page) await delay(100)
     }
-    if (!wsUrl) throw new Error('Chrome DevTools did not come up');
-    const cdp = new Cdp(wsUrl);
-    await cdp.call('Page.enable');
-    await cdp.call('Runtime.enable');
+    if (!page) throw new Error('Chromium DevTools did not start')
+    cdp = new Cdp(page.webSocketDebuggerUrl)
+    await cdp.call('Page.enable')
+    await cdp.call('Runtime.enable')
+    await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] })
 
-    const go = async (href, width = 1280) => {
-      await cdp.call('Emulation.setDeviceMetricsOverride', {
-        width, height: 900, deviceScaleFactor: 1, mobile: width < 600,
-      });
-      await cdp.call('Page.navigate', { url: DIST });
-      await cdp.waitForEvent('Page.loadEventFired');
-      await cdp.waitFor(`!document.querySelector('.skeleton-pulse') && !!document.querySelector('main')`);
-      // file:// + BrowserRouter: the initial path is the file path, so
-      // no route matches and the app shows "Page not found". Clicking a
-      // nav link drives the router's own navigate() (pushState, no
-      // reload), which renders the real page.
-      await cdp.eval(`[...document.querySelectorAll('a')].find(a => a.getAttribute('href') === '${href}')?.click(); true`);
-      await delay(1200);
-      await cdp.waitFor(`!document.querySelector('.skeleton-pulse')`);
-      await delay(800); // let framer-motion entrances settle
-    };
-    const setTheme = async (theme) => {
-      await cdp.eval(`localStorage.setItem('vr-theme', '${theme}')`);
-      await cdp.call('Page.navigate', { url: DIST });
-      await cdp.waitForEvent('Page.loadEventFired');
-      await cdp.waitFor(`!document.querySelector('.skeleton-pulse') && !!document.querySelector('main')`);
-      await cdp.eval(`[...document.querySelectorAll('a')].find(a => a.getAttribute('href') === '/')?.click(); true`);
-      await delay(1200);
-      await cdp.waitFor(`!document.querySelector('.skeleton-pulse')`);
-    };
+    const go = async (route, width = 1280, height = 900) => {
+      await cdp.call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width <= 390 })
+      await cdp.call('Page.navigate', { url: new URL(route, url).href })
+      await cdp.waitForEvent('Page.loadEventFired')
+      await cdp.waitFor("document.querySelector('main h1') && !document.querySelector('.loading-rows')")
+      await cdp.eval('document.fonts.ready.then(() => true)')
+      if (await cdp.eval("!!document.querySelector('.load-error')")) throw new Error(`Data could not load at ${route}`)
+    }
 
-    // Overview, light + dark + mobile.
-    await go('/');
-    await cdp.waitFor(`document.body.innerText.toLowerCase().includes('calls answered')`);
-    await cdp.shot('overview-light.png');
-    await setTheme('dark');
-    await cdp.waitFor(`document.body.innerText.toLowerCase().includes('calls answered')`);
-    await cdp.shot('overview-dark.png');
-    await setTheme('light');
-    await go('/', 390);
-    // Mobile full-page: captureBeyondViewport re-measures Recharts
-    // mid-capture and the charts come out compressed (verified: the
-    // same page renders correctly in a viewport capture, and the DOM
-    // measures a correct 308px chart before the shot). Set the
-    // viewport to the full content height first and capture the
-    // viewport instead — the fixed bottom nav then sits at the very
-    // bottom of the image instead of covering content mid-page.
-    const mobileH = await cdp.eval(`document.documentElement.scrollHeight`);
-    await cdp.call('Emulation.setDeviceMetricsOverride', { width: 390, height: mobileH, deviceScaleFactor: 1, mobile: true });
-    await delay(1200);
-    await cdp.waitFor(`!document.querySelector('.skeleton-pulse')`);
-    await cdp.shot('overview-mobile.png', false);
+    const click = (text) => cdp.eval(`
+      [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === ${JSON.stringify(text)})?.click()
+    `)
 
-    // Calls, first card expanded to show the transcript. (The filter
-    // bar's "Escalated only" label is also .cursor-pointer, so pick the
-    // card by its content — clicking the label would toggle the filter.)
-    await go('/calls');
-    await cdp.waitFor(`document.body.innerText.includes('Showing')`);
-    await cdp.eval(`[...document.querySelectorAll('main .cursor-pointer')].find(el => el.textContent.includes('Caller asked'))?.click(); true`);
-    await delay(600);
-    await cdp.shot('calls-light.png');
+    await go('/')
+    await cdp.shot('overview-light.png')
+    await cdp.eval("localStorage.setItem('vr-theme', 'dark')")
+    await go('/')
+    await cdp.shot('overview-dark.png')
+    await cdp.eval("localStorage.setItem('vr-theme', 'light')")
+    await go('/', 390, 844)
+    await cdp.shot('overview-mobile.png', false)
 
-    // Appointments: list, then calendar, then the Cancelled filter.
-    await go('/appointments');
-    await cdp.waitFor(`document.body.innerText.includes('Appointments')`);
-    await cdp.shot('appointments-light.png');
-    await cdp.eval(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Calendar')?.click()`);
-    await delay(600);
-    await cdp.shot('appointments-calendar.png');
-    await cdp.eval(`[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'List')?.click()`);
-    await delay(400);
+    await go('/calls')
+    await cdp.shot('calls-light.png')
+    await go('/appointments')
+    await cdp.shot('appointments-light.png')
+    await click('Calendar')
+    await cdp.waitFor("document.querySelector('button[aria-pressed=true]')?.textContent.trim() === 'Calendar'")
+    await cdp.shot('appointments-calendar.png')
+    await click('List')
+    await cdp.waitFor("document.getElementById('appointment-status')")
     await cdp.eval(`
-      (() => {
-        const sel = document.querySelector('select[aria-label="Filter by status"]');
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
-        setter.call(sel, 'cancelled');
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      })()
-    `);
-    await delay(600);
-    await cdp.shot('appointments-filter-cancelled.png');
+      const status = document.getElementById('appointment-status')
+      status.value = 'cancelled'
+      status.dispatchEvent(new Event('change', { bubbles: true }))
+    `)
+    await cdp.shot('appointments-filter-cancelled.png')
+    await go('/settings')
+    await cdp.shot('settings-light.png')
+    await go('/live')
+    await cdp.shot('live-call-light.png')
 
-    // Live call: run the scripted Booking scenario, wait for the summary.
-    await go('/live');
-    await cdp.eval(`[...document.querySelectorAll('button')].find(b => b.textContent.includes('Answer & run scenario'))?.click()`);
-    try {
-      await cdp.waitFor(`document.body.innerText.includes('Call summary')`, 30000);
-    } catch (e) {
-      console.log('live run did not reach a summary; page text:',
-        JSON.stringify(await cdp.eval(`document.body.innerText.slice(0, 600)`)));
-      throw e;
+    if (runDemo) {
+      await cdp.waitFor("document.querySelector('.desk-rail-foot')?.textContent.includes('Demo mode')")
+      await click('Run scenario')
+      await cdp.waitFor("document.querySelector('.result-section')", 30000)
+      await cdp.eval("document.querySelector('button[aria-label=\"Dismiss notification\"]')?.click()")
+      await cdp.shot('live-call-run.png')
+      await cdp.eval("document.querySelector('.result-section').scrollIntoView({ block: 'start' })")
+      await cdp.shot('live-call-summary.png', false)
     }
-    await delay(7000); // let the "Call ended" toast auto-dismiss (6s) so it covers nothing
-    await delay(800);
-    await cdp.shot('live-call-run.png');
-    await cdp.eval(`[...document.querySelectorAll('h2,div')].find(e => e.textContent.trim() === 'Call summary')?.scrollIntoView({ block: 'start' })`);
-    await delay(500);
-    await cdp.shot('live-call-summary.png', false);
-
-    cdp.ws.close();
   } finally {
-    chrome.kill('SIGTERM');
+    cdp?.ws.close()
+    if (chrome.pid && chrome.exitCode === null) {
+      const stopped = new Promise((resolve) => chrome.once('exit', resolve))
+      chrome.kill('SIGTERM')
+      await stopped
+    }
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3 })
   }
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((error) => { console.error(error); process.exitCode = 1 })
