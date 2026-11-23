@@ -20,9 +20,17 @@ export type Health = { ok: boolean; service: string; version: string; demo_mode:
 export type Call = { id: number; caller: string; summary: string; sentiment: string; urgency: string; outcome: string; escalated: number; started_at?: string; transcript?: string }
 export type Appt = { id: number; patient_name: string; phone?: string; service: string; slot: string; status: string; created_at?: string }
 export type Stats = { calls_answered: number; appointments_booked: number; escalations: number; unhandled_messages: number; calls_today: number }
-export type EndCallResult = { ok: boolean; message?: string; caller?: string; outcome?: string; escalated?: boolean; sentiment?: string; urgency?: string; summary?: string; transcript?: string; follow_up_sms?: string | null }
+export type EndCallResult = { ok: boolean; call_id: number; caller: string; outcome: string; escalated: boolean; sentiment: string; urgency: string; summary: string; transcript: string; follow_up_sms: string | null }
+export type Service = { name: string; minutes: number; price: number }
+export type CallTurn = { reply: string; intent: string; state: string; slots: string[] }
 
 const TIMEOUT_MS = 10_000
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
 
 function configError(): Error {
   return new Error(
@@ -46,7 +54,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (!r.ok) {
       const detail = (body as { detail?: unknown; message?: unknown } | null)?.detail
         ?? (body as { detail?: unknown; message?: unknown } | null)?.message
-      throw new Error(typeof detail === 'string' ? detail : `API ${r.status}`)
+      throw new ApiError(typeof detail === 'string' ? detail : `API ${r.status}`, r.status)
     }
     if (body === null) {
       throw new Error(
@@ -78,18 +86,14 @@ export const api = {
   health: () => get<Health>('/health'),
   calls: () => get<Call[]>('/calls'),
   appointments: () => get<Appt[]>('/appointments'),
-  slots: (service?: string) => get<{ available: string[]; timezone: string }>(service ? `/slots?service=${encodeURIComponent(service)}` : '/slots'),
+  services: () => get<Service[]>('/services'),
+  slots: (service: string, day: string) => get<{ available: string[]; timezone: string }>(`/slots?${new URLSearchParams({ service, day })}`),
   analytics: () => get<Stats>('/analytics'),
-  // Live turn-by-turn session: start greets, each turn returns the agent
-  // reply with intent/state, end logs the call and returns its summary.
-  startCall: (caller = '+919573719115') => post<{ reply: string }>(`/call/start?caller=${encodeURIComponent(caller)}`),
-  callTurn: (caller: string, text: string) =>
-    post<{ reply: string; intent: string; state: string }>('/call/turn', { caller, text }),
-  endCall: (caller = '+919573719115') => post<EndCallResult>(`/call/end?caller=${encodeURIComponent(caller)}`),
-  bookAppointment: (patient_name: string, service: string, slot: string, phone = '+919573719115') =>
-    post<{ ok: boolean; message: string; follow_up_sms?: string }>('/call/book', { patient_name, service, slot, phone }),
-  notifySms: (to: string, body: string) =>
-    post<{ sent: boolean; mode: string; sid?: string; error?: string }>('/notify/sms', { to, body }),
+  startSimulation: (id: string) => post<{ reply: string; caller: string }>(`/simulation/${id}/start`),
+  simulationTurn: (id: string, text: string) => post<CallTurn>(`/simulation/${id}/turn`, { text }),
+  endSimulation: (id: string) => post<EndCallResult>(`/simulation/${id}/end`),
+  bookAppointment: (patient_name: string, service: string, slot: string, phone: string) =>
+    post<{ ok: boolean; message: string }>('/appointments', { patient_name, service, slot, phone }),
   cancelAppointment: (slot: string, patient_name?: string) =>
     post<{ ok: boolean; message: string }>('/call/cancel', { slot, patient_name }),
 }

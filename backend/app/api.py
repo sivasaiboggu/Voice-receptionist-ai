@@ -1,11 +1,13 @@
 """FastAPI backend: chat/call simulation, bookings, calls, dashboard data."""
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from threading import Lock
+from uuid import UUID
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import FastAPI, Form, Query
+from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -55,6 +57,10 @@ booking.seed_slots()
 
 _sessions = {}
 _MAX_SESSIONS = 100
+_simulations = {}
+_finished_simulations = {}
+_simulation_lock = Lock()
+_SIMULATOR_CALLER = "+12025550101"
 
 
 def _end_abandoned(ag):
@@ -148,7 +154,57 @@ def call_start(caller: str = "+919573719115"):
 @app.post("/call/turn")
 def call_turn(turn: Turn):
     ag = _get_session(turn.caller)
-    return {"reply": ag.handle(turn.text), "intent": ag.intent, "state": ag.state}
+    return _turn_reply(ag, turn.text)
+
+
+def _turn_reply(agent, text):
+    reply = agent.handle(text)
+    return {"reply": reply, "intent": agent.intent, "state": agent.state, "slots": agent.offered_slots}
+
+
+@app.post("/simulation/{session_id}/start")
+def start_simulation(session_id: UUID):
+    if not _env_flag("DEMO_MODE"):
+        raise HTTPException(status_code=403, detail="Practice calls are available in demo mode.")
+    with _simulation_lock:
+        if session_id in _finished_simulations:
+            raise HTTPException(status_code=409, detail="This simulation has ended. Start a new call.")
+        if session_id not in _simulations:
+            if len(_simulations) >= _MAX_SESSIONS:
+                oldest = next(iter(_simulations))
+                _end_abandoned(_simulations[oldest][0])
+                del _simulations[oldest]
+            agent = voice_agent.VoiceAgent(caller=_SIMULATOR_CALLER, practice=True)
+            _simulations[session_id] = (agent, agent.greet())
+        return {"reply": _simulations[session_id][1], "caller": _SIMULATOR_CALLER}
+
+
+@app.post("/simulation/{session_id}/turn")
+def simulation_turn(session_id: UUID, turn: Turn):
+    with _simulation_lock:
+        session = _simulations.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="This simulation has ended or expired.")
+        agent = session[0]
+        if agent.escalated:
+            raise HTTPException(status_code=409, detail="The caller has been handed off. End the call to finish.")
+        return _turn_reply(agent, turn.text)
+
+
+@app.post("/simulation/{session_id}/end")
+def end_simulation(session_id: UUID):
+    with _simulation_lock:
+        if session_id in _finished_simulations:
+            return _finished_simulations[session_id]
+        session = _simulations.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="This simulation is no longer active.")
+        result = {"ok": True, **session[0].end_call()}
+        del _simulations[session_id]
+        if len(_finished_simulations) >= _MAX_SESSIONS:
+            del _finished_simulations[next(iter(_finished_simulations))]
+        _finished_simulations[session_id] = result
+        return result
 
 
 @app.post("/call/book")
@@ -193,14 +249,28 @@ def appointments():
     return booking.list_appointments()
 
 
+@app.post("/appointments")
+def create_appointment(req: BookRequest):
+    booking.seed_slots()
+    ok, message = booking.book(req.patient_name, req.phone, req.service, req.slot, confirmation_expected=False)
+    if not ok:
+        raise HTTPException(status_code=409, detail=message)
+    return {"ok": True, "message": "Appointment booked."}
+
+
+@app.get("/services")
+def services():
+    return [{"name": name, **details} for name, details in booking.SERVICES.items()]
+
+
 @app.get("/slots")
-def slots(service: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100)):
+def slots(service: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), day: date | None = None):
     # `timezone` names the zone the slot strings are in, so a dashboard
     # in another timezone can label them instead of guessing.
     # `service` (optional) filters to slots the whole service fits in —
     # the first free slot overall can be 19:30, which a 45-minute
     # cleaning would run past closing.
-    return {"available": booking.available_slots(service=service, limit=limit), "timezone": booking.clinic_tz_name()}
+    return {"available": booking.available_slots(service=service, limit=limit, day=day), "timezone": booking.clinic_tz_name()}
 
 
 @app.get("/calls")

@@ -230,7 +230,7 @@ def seed_slots():
             conn.execute("INSERT OR IGNORE INTO slots (slot) VALUES (?)", (slot,))
 
 
-def available_slots(service=None, limit=20):
+def available_slots(service=None, limit=20, day=None):
     """Future, still-free slots only, earliest first. `limit` is clamped.
 
     `service` finally means something: it used to be accepted and
@@ -262,10 +262,16 @@ def available_slots(service=None, limit=20):
     # a server running in another timezone (e.g. UTC).
     now = now_clinic().strftime("%Y-%m-%d %H:%M")
     with db() as conn:
-        rows = conn.execute(
-            "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT 200",
-            (now,),
-        ).fetchall()
+        if day is None:
+            rows = conn.execute(
+                "SELECT slot FROM slots WHERE available=1 AND slot > ? ORDER BY slot LIMIT 200",
+                (now,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT slot FROM slots WHERE available=1 AND slot > ? AND slot LIKE ? ORDER BY slot",
+                (now, f"{day.isoformat()} %"),
+            ).fetchall()
         intervals = _booked_intervals(conn)
     free = []
     for r in rows:
@@ -333,7 +339,7 @@ def slot_start_blocked(slot):
         )
 
 
-def book(patient_name, phone, service, slot):
+def book(patient_name, phone, service, slot, *, confirmation_expected=True):
     """Book a slot. Returns (ok, message). Double-booking is rejected atomically."""
     canonical, slot_dt, error = validate_booking(patient_name, phone, service, slot)
     if error:
@@ -384,10 +390,10 @@ def book(patient_name, phone, service, slot):
             # UNIQUE(slot) second line of defence: release the slot again.
             conn.execute("UPDATE slots SET available=1 WHERE slot=?", (slot,))
             return False, f"Sorry, {slot} is already booked. Please pick another time."
-    return True, (
-        f"Booked: {canonical} for {patient_name} on {slot} "
-        f"(Rs {SERVICES[canonical]['price']}). A confirmation will be sent to {phone}."
-    )
+    message = f"Booked: {canonical} for {patient_name} on {slot} (Rs {SERVICES[canonical]['price']})."
+    if confirmation_expected:
+        message += f" A confirmation will be sent to {phone}."
+    return True, message
 
 
 def list_appointments():

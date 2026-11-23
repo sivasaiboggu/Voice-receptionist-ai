@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { CalendarDays, List } from 'lucide-react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { CalendarDays, CalendarPlus, List } from 'lucide-react'
 import { ActionLink, EmptyState, LoadError, LoadingRows, PageHeading, SectionHeading } from '../components/Desk'
 import { useDesk } from '../components/Layout'
 import { Badge } from '../components/ui/badge'
@@ -10,6 +10,7 @@ import { useToast } from '../lib/useToast'
 import { dateKey, formatDate, recordLabel, tzAbbreviation } from '../lib/utils'
 
 type StatusFilter = 'all' | 'booked' | 'cancelled'
+const BookingDialog = lazy(() => import('../components/BookingDialog'))
 
 function dateLabel(key: string, options: Intl.DateTimeFormatOptions) {
   return formatDate(new Date(`${key}T12:00:00Z`), options, 'UTC')
@@ -38,8 +39,11 @@ export default function Appointments() {
   const [busy, setBusy] = useState(false)
   const keepButton = useRef<HTMLButtonElement>(null)
   const statusFilter = useRef<HTMLSelectElement>(null)
+  const calendar = useRef<HTMLDivElement>(null)
   const focusAfterConfirmation = useRef<HTMLElement | null>(null)
-  const [view, setView] = useState<'list' | 'calendar'>('list')
+  const bookingButton = useRef<HTMLButtonElement>(null)
+  const [booking, setBooking] = useState(false)
+  const [view, setView] = useState<'list' | 'calendar'>('calendar')
   const [selectedDay, setSelectedDay] = useState<string | null>(null)
   const [status, setStatus] = useState<StatusFilter>('all')
 
@@ -57,7 +61,7 @@ export default function Appointments() {
     } else if (focusAfterConfirmation.current) {
       const row = focusAfterConfirmation.current
       if (row.isConnected) row.focus()
-      else statusFilter.current?.focus()
+      else (statusFilter.current ?? calendar.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]'))?.focus()
       focusAfterConfirmation.current = null
     }
   }, [confirming])
@@ -103,7 +107,16 @@ export default function Appointments() {
     )
   }
 
-  const heading = <PageHeading title="Appointments" description="Bookings made by the receptionist." />
+  function closeBooking() {
+    setBooking(false)
+    requestAnimationFrame(() => bookingButton.current?.focus())
+  }
+
+  const heading = (
+    <PageHeading title="Appointments" description="See what’s booked and find an open time at the clinic.">
+      <Button ref={bookingButton} disabled={!appointments} onClick={() => setBooking(true)}><CalendarPlus size={17} aria-hidden="true" />Book appointment</Button>
+    </PageHeading>
+  )
   if (error) return <>{heading}<LoadError title="Could not load appointments" message={error} retry={() => { setError(''); setAttempt(attempt + 1) }} /></>
   if (!appointments) return <>{heading}<LoadingRows label="Loading appointments…" /></>
 
@@ -112,13 +125,21 @@ export default function Appointments() {
   const listGroups = groupByDay(visible)
   const base = new Date(`${today}T12:00:00Z`).getTime()
   const days = Array.from({ length: 14 }, (_, index) => new Date(base + index * 86_400_000).toISOString().slice(0, 10))
-  const openDay = selectedDay && days.includes(selectedDay) ? selectedDay : null
+  const openDay = selectedDay && days.includes(selectedDay) ? selectedDay : today
   const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' }
 
   return (
     <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
       {heading}
+      {booking && <Suspense fallback={<p className="muted" role="status">Opening booking…</p>}><BookingDialog today={today} onClose={closeBooking} onBooked={(day) => {
+        closeBooking()
+        setStatus('all')
+        setSelectedDay(day)
+        setView('calendar')
+        setAttempt((value) => value + 1)
+        push({ title: 'Appointment booked', kind: 'success' })
+      }} /></Suspense>}
       <div className="appointment-toolbar">
         <div className="appointment-views" role="group" aria-label="Appointments view">
           <Button variant={view === 'list' ? 'default' : 'outline'} onClick={() => setView('list')} aria-pressed={view === 'list'}><List size={16} aria-hidden="true" />List</Button>
@@ -131,10 +152,10 @@ export default function Appointments() {
         </div>}
       </div>
 
-      {zone && <p className="appointments-zone muted">Times in {tzAbbreviation(zone)}</p>}
+      <p className="appointments-zone muted">{zone ? `Times in ${tzAbbreviation(zone)}` : 'Clinic local time'}</p>
 
-      {!appointments.length ? (
-        <EmptyState title="No appointments yet" description="Bookings appear here after the receptionist confirms a time."><ActionLink to="/live">Run a demo call</ActionLink></EmptyState>
+      {!appointments.length && view === 'list' ? (
+        <EmptyState title="No appointments yet" description="Book an appointment here or run a practice call."><ActionLink to="/live">Run a demo call</ActionLink></EmptyState>
       ) : view === 'list' ? (
         <div className="booking-groups">
           {listGroups.size ? [...listGroups.entries()].map(([key, rows]) => (
@@ -144,26 +165,22 @@ export default function Appointments() {
       ) : (
         <section className="ruled-section">
           <SectionHeading title="Next 14 days" note={`${dateLabel(days[0], { day: 'numeric', month: 'short' })} – ${dateLabel(days[13], { day: 'numeric', month: 'short', year: 'numeric' })}`} />
-          <div className="appointment-calendar">
+          <div className="appointment-calendar" ref={calendar}>
             {days.map((day) => {
               const rows = calendarGroups.get(day) ?? []
               return (
-                <button key={day} type="button" aria-pressed={openDay === day} onClick={() => setSelectedDay(openDay === day ? null : day)}>
+                <button key={day} type="button" aria-pressed={openDay === day} onClick={() => setSelectedDay(day)}>
                   <span className="muted">{day === today ? 'Today' : dateLabel(day, { weekday: 'short' })}</span>
-                  <time className="data-text" dateTime={day}>{dateLabel(day, { day: 'numeric', month: 'short' })}</time>
-                  <span>{rows.filter((appointment) => appointment.status === 'booked').length} booked</span>
-                  {rows.slice(0, 3).map((appointment) => <small key={appointment.id} className="muted">{appointment.slot.slice(11, 16)} {appointment.patient_name}{appointment.status === 'cancelled' ? ' (cancelled)' : ''}</small>)}
-                  {rows.length > 3 && <small className="muted">+{rows.length - 3} more</small>}
+                  <time dateTime={day}>{dateLabel(day, { day: 'numeric', month: 'short' })}</time>
+                  <span className="calendar-count">{rows.filter((appointment) => appointment.status === 'booked').length} booked</span>
                 </button>
               )
             })}
           </div>
-          {openDay && (
-            <section className="selected-day">
-              <SectionHeading title={dateLabel(openDay, dateOptions)} />
-              {calendarGroups.has(openDay) ? appointmentRows(calendarGroups.get(openDay)!) : <EmptyState title="Nothing booked" description="There are no appointments on this day." />}
-            </section>
-          )}
+          <section className="selected-day" key={openDay}>
+            <SectionHeading title={dateLabel(openDay, dateOptions)} />
+            {calendarGroups.has(openDay) ? appointmentRows(calendarGroups.get(openDay)!) : <EmptyState title="Nothing booked" description="There are no appointments on this day." />}
+          </section>
         </section>
       )}
     </>

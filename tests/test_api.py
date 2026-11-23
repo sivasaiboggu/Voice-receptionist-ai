@@ -315,3 +315,84 @@ def test_notify_sms_missing_twilio_package_is_demo_record(client, monkeypatch):
     body = r.json()
     assert body["sent"] is False
     assert "not installed" in body["error"]
+
+
+def test_simulation_books_through_offered_slot_and_logs_once(client):
+    from uuid import uuid4
+
+    session = f"/simulation/{uuid4()}"
+    other = f"/simulation/{uuid4()}"
+    greeting = client.post(f"{session}/start").json()
+    assert greeting["caller"] == "+12025550101"
+    assert client.post(f"{other}/start").is_success
+
+    options = client.post(f"{session}/turn", json={"text": "Book a teeth cleaning appointment"}).json()
+    assert options["state"] == "book" and options["slots"]
+    assert all(slot[11:] not in {"13:00", "13:30", "19:30"} for slot in options["slots"])
+
+    slot = options["slots"][0]
+    choice = client.post(f"{session}/turn", json={"text": slot}).json()
+    assert "may I have your name" in choice["reply"]
+    booked = client.post(f"{session}/turn", json={"text": "My name is Asha Rao"}).json()
+    assert booked["reply"].startswith("Booked:")
+    assert "confirmation will be sent" not in booked["reply"]
+    assert booked["slots"] == []
+
+    handoff = client.post(f"{other}/turn", json={"text": "I am in terrible pain"}).json()
+    assert handoff["state"] == "escalate"
+    assert client.post(f"{other}/turn", json={"text": "What time do you open?"}).status_code == 409
+
+    result = client.post(f"{session}/end").json()
+    assert result["outcome"] == "booked" and result["follow_up_sms"]
+    assert f"Caller: {slot}" in result["transcript"]
+    assert "terrible pain" not in result["transcript"]
+    assert client.post(f"{session}/end").json() == result
+    assert client.post(f"{session}/turn", json={"text": "Thank you"}).status_code == 404
+
+    escalated = client.post(f"{other}/end").json()
+    assert escalated["outcome"] == "escalated-emergency"
+    assert "Asha Rao" not in escalated["transcript"]
+    assert {call["id"] for call in client.get("/calls").json()} == {result["call_id"], escalated["call_id"]}
+    assert [(item["patient_name"], item["slot"]) for item in client.get("/appointments").json()] == [("Asha Rao", slot)]
+
+
+def test_practice_calls_require_demo_mode(client, monkeypatch):
+    from uuid import uuid4
+
+    monkeypatch.setenv("DEMO_MODE", "false")
+    response = client.post(f"/simulation/{uuid4()}/start")
+    assert response.status_code == 403
+    assert client.get("/calls").json() == []
+
+
+def test_desk_booking_uses_service_and_clinic_day_and_refreshes_after_conflict(client):
+    from datetime import timedelta
+
+    from backend.app import booking
+
+    day = (booking.now_clinic().date() + timedelta(days=1)).isoformat()
+    service = "Root canal treatment"
+    services = {item["name"]: item for item in client.get("/services").json()}
+    assert services[service]["minutes"] == 60
+    params = {"service": service, "day": day}
+    times = client.get("/slots", params=params).json()
+    assert times["timezone"] == booking.clinic_tz_name()
+    assert times["available"] and all(slot.startswith(day) for slot in times["available"])
+    assert client.get("/slots", params={"day": "tomorrow"}).status_code == 422
+
+    slot = times["available"][0]
+    payload = {"service": service, "slot": slot, "patient_name": "Desk Patient", "phone": "+12025550105"}
+    assert client.post("/appointments", json=payload).json()["message"] == "Appointment booked."
+    assert client.post("/appointments", json={**payload, "patient_name": "Other Patient"}).status_code == 409
+    assert slot not in client.get("/slots", params=params).json()["available"]
+    assert client.get("/calls").json() == []
+    cancelled = client.post("/call/cancel", json={"slot": slot, "patient_name": "Desk Patient"})
+    assert cancelled.json()["ok"]
+    assert slot in client.get("/slots", params=params).json()["available"]
+
+
+def test_custom_price_demo_does_not_create_an_unrequested_booking(client):
+    result = client.post("/call/demo", json={"turns": ["How much does cleaning cost?"]}).json()
+    assert result["outcome"] == "answered"
+    assert any("Rs 1,500" in reply for reply in result["replies"])
+    assert client.get("/appointments").json() == []
